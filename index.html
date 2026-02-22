@@ -6,6 +6,7 @@
 <title>Study Cards</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#111111" />
+
 <style>
 :root {
   --bg: #ffffff;
@@ -49,6 +50,26 @@ img {
   border-radius:10px;
 }
 
+/* NEW BUTTON STYLES */
+.answer-btn {
+  width:100%;
+  padding:22px 0;   /* roughly double previous height */
+  margin:8px 0;
+  border-radius:10px;
+  border:none;
+  font-size:18px;
+  font-weight:600;
+  color:white;
+}
+
+.correct {
+  background:#2e7d32;
+}
+
+.incorrect {
+  background:#c62828;
+}
+
 button {
   padding:10px 16px;
   margin:5px;
@@ -61,6 +82,8 @@ button {
 select, input {
   padding:8px;
   margin:5px;
+  width:100%;
+  max-width:400px;
 }
 
 .ipad body {
@@ -79,8 +102,8 @@ select, input {
 <div class="card" onclick="flipCard()" id="card">Tap to Begin</div>
 
 <div>
-  <button onclick="markCard(true)">Correct</button>
-  <button onclick="markCard(false)">Incorrect</button>
+  <button class="answer-btn correct" onclick="markCard(true)">Correct</button>
+  <button class="answer-btn incorrect" onclick="markCard(false)">Incorrect</button>
 </div>
 
 <p>Retention: <span id="retention">0%</span></p>
@@ -92,12 +115,6 @@ select, input {
 <input id="answer" placeholder="Answer"><br>
 <input type="file" id="imageUpload"><br>
 <button onclick="addCard()">Add</button>
-
-<hr>
-
-<h3>Decks</h3>
-<input id="newDeck" placeholder="New Deck Name">
-<button onclick="addDeck()">Add Deck</button>
 
 <hr>
 
@@ -124,15 +141,6 @@ function save() {
   localStorage.setItem("studyData", JSON.stringify(data));
 }
 
-function addDeck() {
-  const name = document.getElementById("newDeck").value.trim();
-  if(!name) return;
-  data.decks[name] = [];
-  currentDeck = name;
-  save();
-  renderDecks();
-}
-
 function renderDecks() {
   const select = document.getElementById("deckSelect");
   select.innerHTML = "";
@@ -153,7 +161,9 @@ renderDecks();
 function addCard() {
   const q = question.value.trim();
   const a = answer.value.trim();
-  if(!q || !a || !currentDeck) return;
+  if(!q || !a) return;
+
+  if(!data.decks[currentDeck]) data.decks[currentDeck]=[];
 
   const file = imageUpload.files[0];
   if(file) {
@@ -180,6 +190,7 @@ function saveCard(q,a,img) {
 }
 
 function getDueCards() {
+  if(!data.decks[currentDeck]) return [];
   return data.decks[currentDeck].filter(c=>c.next<=Date.now());
 }
 
@@ -197,6 +208,7 @@ function flipCard() {
   card.innerHTML = showingAnswer ?
     currentCard.a + (currentCard.img?`<img src="${currentCard.img}">`:"") :
     currentCard.q;
+  showingAnswer = !showingAnswer;
 }
 
 function markCard(correct) {
@@ -212,7 +224,7 @@ function markCard(correct) {
   currentCard=null;
   save();
   updateRetention();
-  card.innerHTML="Next card...";
+  card.innerHTML="Tap for next card";
 }
 
 function updateRetention(){
@@ -222,45 +234,62 @@ function updateRetention(){
 }
 updateRetention();
 
+/* UPDATED CSV FORMAT:
+   Column 1 = Question
+   Column 2 = Answer
+   File name (without .csv) = Deck name
+*/
+function importCSV(){
+  const file = csvFile.files[0];
+  if(!file) return;
+
+  const deckName = file.name.replace(".csv","");
+
+  if(!data.decks[deckName]) data.decks[deckName]=[];
+
+  const reader = new FileReader();
+  reader.onload = function(e){
+    const rows = e.target.result.split("\n");
+    rows.forEach(r=>{
+      if(!r.trim()) return;
+      const [q,a] = r.split(",");
+      if(q && a){
+        data.decks[deckName].push({
+          q:q.trim(),
+          a:a.trim(),
+          img:null,
+          interval:1,
+          next:Date.now()
+        });
+      }
+    });
+    currentDeck = deckName;
+    save();
+    renderDecks();
+    alert("Imported into deck: " + deckName);
+  };
+  reader.readAsText(file);
+}
+
+function exportCSV(){
+  if(!currentDeck) return;
+  let csv="";
+  data.decks[currentDeck].forEach(c=>{
+    csv+=`${c.q},${c.a}\n`;
+  });
+  const blob = new Blob([csv], {type:"text/csv"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download=currentDeck+".csv";
+  a.click();
+}
+
 function toggleDark(){
   document.body.classList.toggle("dark");
 }
 
 function toggleLayout(){
   document.body.classList.toggle("ipad");
-}
-
-function importCSV(){
-  const file = csvFile.files[0];
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = function(e){
-    const rows = e.target.result.split("\n");
-    rows.forEach(r=>{
-      const [deck,q,a] = r.split(",");
-      if(!data.decks[deck]) data.decks[deck]=[];
-      data.decks[deck].push({
-        q,a,img:null,interval:1,next:Date.now()
-      });
-    });
-    save();
-    renderDecks();
-  };
-  reader.readAsText(file);
-}
-
-function exportCSV(){
-  let csv="";
-  Object.keys(data.decks).forEach(deck=>{
-    data.decks[deck].forEach(c=>{
-      csv+=`${deck},${c.q},${c.a}\n`;
-    });
-  });
-  const blob = new Blob([csv], {type:"text/csv"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download="flashcards.csv";
-  a.click();
 }
 </script>
 
