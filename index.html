@@ -6,7 +6,6 @@
 <title>Study Cards</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#111111" />
-
 <style>
 :root {
   --bg: #ffffff;
@@ -118,6 +117,12 @@ select, input {
 
 <hr>
 
+<h3>Decks</h3>
+<input id="newDeck" placeholder="New Deck Name">
+<button onclick="addDeck()">Add Deck</button>
+
+<hr>
+
 <h3>Import / Export</h3>
 <input type="file" id="csvFile">
 <button onclick="importCSV()">Import CSV</button>
@@ -141,6 +146,15 @@ function save() {
   localStorage.setItem("studyData", JSON.stringify(data));
 }
 
+function addDeck() {
+  const name = document.getElementById("newDeck").value.trim();
+  if(!name) return;
+  data.decks[name] = [];
+  currentDeck = name;
+  save();
+  renderDecks();
+}
+
 function renderDecks() {
   const select = document.getElementById("deckSelect");
   select.innerHTML = "";
@@ -161,9 +175,7 @@ renderDecks();
 function addCard() {
   const q = question.value.trim();
   const a = answer.value.trim();
-  if(!q || !a) return;
-
-  if(!data.decks[currentDeck]) data.decks[currentDeck]=[];
+  if(!q || !a || !currentDeck) return;
 
   const file = imageUpload.files[0];
   if(file) {
@@ -190,7 +202,6 @@ function saveCard(q,a,img) {
 }
 
 function getDueCards() {
-  if(!data.decks[currentDeck]) return [];
   return data.decks[currentDeck].filter(c=>c.next<=Date.now());
 }
 
@@ -208,7 +219,6 @@ function flipCard() {
   card.innerHTML = showingAnswer ?
     currentCard.a + (currentCard.img?`<img src="${currentCard.img}">`:"") :
     currentCard.q;
-  showingAnswer = !showingAnswer;
 }
 
 function markCard(correct) {
@@ -224,7 +234,7 @@ function markCard(correct) {
   currentCard=null;
   save();
   updateRetention();
-  card.innerHTML="Tap for next card";
+  card.innerHTML="Next card...";
 }
 
 function updateRetention(){
@@ -233,6 +243,14 @@ function updateRetention(){
     Math.round((data.stats.correct/data.stats.total)*100)+"%";
 }
 updateRetention();
+
+function toggleDark(){
+  document.body.classList.toggle("dark");
+}
+
+function toggleLayout(){
+  document.body.classList.toggle("ipad");
+}
 
 /* UPDATED CSV FORMAT:
    Column 1 = Question
@@ -271,6 +289,7 @@ function importCSV(){
   reader.readAsText(file);
 }
 
+
 function exportCSV(){
   if(!currentDeck) return;
   let csv="";
@@ -284,13 +303,6 @@ function exportCSV(){
   a.click();
 }
 
-function toggleDark(){
-  document.body.classList.toggle("dark");
-}
-
-function toggleLayout(){
-  document.body.classList.toggle("ipad");
-}
 </script>
 
 </body>
