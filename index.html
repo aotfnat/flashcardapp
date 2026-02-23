@@ -16,20 +16,23 @@ body {
 }
 
 /* Sidebar */
-#sidebar {
-  position:fixed;
-  top:0;
-  left:-280px;
-  width:260px;
-  height:100%;
-  background:#1c1c1c;
-  padding:20px;
-  transition:left 0.3s;
-  overflow-y:auto;
-  z-index:1000;
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 260px;              /* adjust if you want */
+  height: 100%;
+  background: #111;
+  color: white;
+  transition: transform 0.3s ease;
+  transform: translateX(-100%);
+  z-index: 1000;
+  overflow-y: auto;
 }
 
-#sidebar.open { left:0; }
+.sidebar.open {
+  transform: translateX(0);
+}
 
 #overlay {
   position:fixed;
@@ -51,6 +54,20 @@ body {
   border:none;
 }
 
+#cardList div {
+  padding: 8px;
+  border-bottom: 1px solid #ddd;
+  cursor: pointer;
+}
+
+#cardList div:hover {
+  background: #f0f0f0;
+}
+
+textarea {
+  width: 100%;
+  margin-bottom: 8px;
+}
 .card {
   margin-top:80px;
   padding:40px;
@@ -112,6 +129,19 @@ input, select {
 
   <input type="file" id="csvFile">
   <button onclick="importCSV()">Import CSV</button>
+
+  <div class="menu-section">
+  <h3>Edit Cards</h3>
+  <div id="cardList"></div>
+  <div id="cardEditor" class="hidden">
+    <textarea id="editQ" placeholder="Question"></textarea>
+    <textarea id="editA" placeholder="Answer"></textarea>
+    <input type="file" id="editImg" accept="image/*">
+    <button onclick="saveCardEdit()">Save</button>
+    <button onclick="deleteCard()">Delete Card</button>
+  </div>
+    
+</div>
 </div>
 
 <div id="overlay" onclick="toggleMenu()"></div>
@@ -326,10 +356,68 @@ function importCSV(){
 
   reader.readAsText(file);
 }
+
+let editingIndex = null;
+
+function openCardEditor(){
+  const list = document.getElementById("cardList");
+  list.innerHTML = "";
+
+  const cards = data.decks[currentDeck].cards;
+
+  cards.forEach((card,i)=>{
+    const div = document.createElement("div");
+    div.textContent = card.q.substring(0,50);
+    div.onclick = ()=>loadCardIntoEditor(i);
+    list.appendChild(div);
+  });
+}
+
+function loadCardIntoEditor(index){
+  editingIndex = index;
+  const card = data.decks[currentDeck].cards[index];
+
+  document.getElementById("editQ").value = card.q;
+  document.getElementById("editA").value = card.a;
+  document.getElementById("cardEditor").classList.remove("hidden");
+}
+
+function saveCardEdit(){
+  if(editingIndex === null) return;
+
+  const card = data.decks[currentDeck].cards[editingIndex];
+  card.q = document.getElementById("editQ").value;
+  card.a = document.getElementById("editA").value;
+
+  const imgInput = document.getElementById("editImg");
+  if(imgInput.files[0]){
+    const reader = new FileReader();
+    reader.onload = e=>{
+      card.img = e.target.result;
+      save();
+      alert("Card updated");
+    };
+    reader.readAsDataURL(imgInput.files[0]);
+  } else {
+    save();
+    alert("Card updated");
+  }
+}
+
+function deleteCard(){
+  if(editingIndex === null) return;
+
+  data.decks[currentDeck].cards.splice(editingIndex,1);
+  editingIndex = null;
+  document.getElementById("cardEditor").classList.add("hidden");
+  save();
+  openCardEditor();
+}
   
 </script>
 
 </body>
 </html>
+
 
 
