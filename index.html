@@ -56,9 +56,7 @@ img {
   z-index:1000;
 }
 
-.sidebar.open {
-  transform:translateX(0);
-}
+.sidebar.open { transform:translateX(0); }
 
 .menuBtn {
   position:fixed;
@@ -103,6 +101,12 @@ input, textarea, select {
 <button onclick="restartDeck()">Restart Deck</button>
 <button onclick="toggleMode()">Toggle Shuffle</button>
 <button onclick="markDone()">Mark Done ✔</button>
+
+<hr>
+
+<h3>Import CSV</h3>
+<input type="file" id="csvFile" accept=".csv">
+<button onclick="importCSV()">Import</button>
 
 <hr>
 
@@ -160,6 +164,7 @@ function renderDecks(){
     div.onclick=()=>{
       currentDeck=name;
       startSession();
+      renderEditor();
       toggleMenu();
     };
     list.appendChild(div);
@@ -256,12 +261,14 @@ function showAnswer(){
 function grade(correct){
   const deck=data.decks[currentDeck];
   if(!correct) repeatQueue.push(deck.cards[currentIndex]);
+
   document.getElementById("correctBtn").style.display="none";
   document.getElementById("incorrectBtn").style.display="none";
   document.getElementById("showBtn").style.display="block";
   document.getElementById("showBtn").innerText="Show Answer";
 
   currentIndex++;
+
   if(currentIndex>=deck.cards.length){
     if(repeatQueue.length>0){
       deck.cards = repeatQueue;
@@ -276,64 +283,71 @@ function grade(correct){
   showQuestion();
 }
 
-function addCard(){
-  if(!currentDeck) return;
-  const q=document.getElementById("newQ").value;
-  const a=document.getElementById("newA").value;
-  const imgFile=document.getElementById("newImg").files[0];
+/* ---------- CSV PARSER ---------- */
 
-  const card={q,a,img:null};
+function parseCSV(text) {
+  const rows = [];
+  let current = '';
+  let row = [];
+  let inQuotes = false;
 
-  if(imgFile){
-    const reader=new FileReader();
-    reader.onload=e=>{
-      card.img=e.target.result;
-      data.decks[currentDeck].cards.push(card);
-      save();
-      renderEditor();
-    };
-    reader.readAsDataURL(imgFile);
-  } else {
-    data.decks[currentDeck].cards.push(card);
-    save();
-    renderEditor();
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const next = text[i + 1];
+
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"';
+      i++;
+    } 
+    else if (char === '"') {
+      inQuotes = !inQuotes;
+    } 
+    else if (char === ',' && !inQuotes) {
+      row.push(current.trim());
+      current = '';
+    } 
+    else if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (current || row.length) {
+        row.push(current.trim());
+        rows.push(row);
+        row = [];
+        current = '';
+      }
+    } 
+    else {
+      current += char;
+    }
   }
+
+  if (current || row.length) {
+    row.push(current.trim());
+    rows.push(row);
+  }
+
+  return rows;
 }
 
-function renderEditor(){
-  const list=document.getElementById("cardList");
-  list.innerHTML="";
-  if(!currentDeck) return;
-  data.decks[currentDeck].cards.forEach((c,i)=>{
-    const div=document.createElement("div");
-    div.textContent=c.q.substring(0,40);
-    div.onclick=()=>editCard(i);
-    list.appendChild(div);
-  });
-}
+function importCSV(){
+  const file=document.getElementById("csvFile").files[0];
+  if(!file) return;
 
-function editCard(i){
-  editingIndex=i;
-  const card=data.decks[currentDeck].cards[i];
-  document.getElementById("editQ").value=card.q;
-  document.getElementById("editA").value=card.a;
-  document.getElementById("editor").style.display="block";
-}
+  const deckName=file.name.replace(".csv","");
+  if(!data.decks[deckName])
+    data.decks[deckName]={cards:[],mode:"sequential",done:false};
 
-function saveEdit(){
-  const card=data.decks[currentDeck].cards[editingIndex];
-  card.q=document.getElementById("editQ").value;
-  card.a=document.getElementById("editA").value;
-  save();
-  renderEditor();
-  alert("Saved");
-}
-
-function deleteCard(){
-  data.decks[currentDeck].cards.splice(editingIndex,1);
-  document.getElementById("editor").style.display="none";
-  save();
-  renderEditor();
+  const reader=new FileReader();
+  reader.onload=e=>{
+    const rows=parseCSV(e.target.result);
+    rows.forEach(r=>{
+      if(r.length>=2){
+        data.decks[deckName].cards.push({q:r[0],a:r[1],img:null});
+      }
+    });
+    save();
+    renderDecks();
+    alert("Import complete.");
+  };
+  reader.readAsText(file);
 }
 
 renderDecks();
