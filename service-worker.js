@@ -1,4 +1,4 @@
-const CACHE = "study-cards-v3";
+const CACHE = "study-cards-v4";
 
 self.addEventListener("install", e=>{
   e.waitUntil(
@@ -20,3 +20,4 @@ self.addEventListener("fetch", e=>{
   );
 
 });
+
