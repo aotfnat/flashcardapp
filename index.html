@@ -1,271 +1,280 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Study Cards</title>
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#111111" />
+<meta name="theme-color" content="#111111">
 
 <style>
-:root {
-  --bg: #ffffff;
-  --text: #111;
-  --card: #f4f4f4;
-}
-
-body.dark {
-  --bg: #111;
-  --text: #eee;
-  --card: #1c1c1c;
-}
-
 body {
   margin:0;
   font-family:-apple-system,BlinkMacSystemFont,sans-serif;
-  background:var(--bg);
-  color:var(--text);
-  padding:20px;
-  max-width:900px;
-  margin:auto;
-}
-
-.card {
-  background:var(--card);
-  padding:40px;
-  border-radius:14px;
-  margin:20px 0;
-  min-height:180px;
-  display:flex;
-  flex-direction:column;
-  justify-content:center;
-  align-items:center;
-  text-align:center;
-  font-size:20px;
-}
-
-img {
-  max-width:100%;
-  margin-top:12px;
-  border-radius:10px;
-}
-
-/* Primary study buttons */
-.study-btn {
-  width:100%;
-  padding:22px 0;
-  margin:8px 0;
-  border-radius:10px;
-  border:none;
-  font-size:18px;
-  font-weight:600;
+  background:#111;
   color:white;
 }
 
-.show-answer {
-  background:#333;
+/* Sidebar */
+#sidebar {
+  position:fixed;
+  top:0;
+  left:-280px;
+  width:260px;
+  height:100%;
+  background:#1c1c1c;
+  padding:20px;
+  transition:left 0.3s;
+  overflow-y:auto;
+  z-index:1000;
 }
 
-.correct {
-  background:#2e7d32;
-}
+#sidebar.open { left:0; }
 
-.incorrect {
-  background:#c62828;
-}
-
-.hidden {
+#overlay {
+  position:fixed;
+  top:0; left:0;
+  width:100%; height:100%;
+  background:rgba(0,0,0,0.5);
   display:none;
 }
 
-select, input {
-  padding:8px;
-  margin:5px;
+#overlay.show { display:block; }
+
+.menu-btn {
+  position:fixed;
+  top:15px;
+  left:15px;
+  font-size:22px;
+  background:none;
+  color:white;
+  border:none;
+}
+
+.card {
+  margin-top:80px;
+  padding:40px;
+  text-align:center;
+  font-size:22px;
+}
+
+.study-btn {
+  width:90%;
+  margin:10px auto;
+  padding:22px;
+  font-size:18px;
+  border:none;
+  border-radius:10px;
+  display:block;
+}
+
+.show { background:#333; color:white; }
+.correct { background:#2e7d32; color:white; }
+.incorrect { background:#c62828; color:white; }
+
+.hidden { display:none; }
+
+input, select {
   width:100%;
-  max-width:400px;
+  padding:8px;
+  margin:6px 0;
 }
 </style>
 </head>
 <body>
 
-<h2>Study Cards</h2>
+<button class="menu-btn" onclick="toggleMenu()">☰</button>
 
-<select id="deckSelect"></select>
-<button onclick="toggleDark()">Dark Mode</button>
+<div id="sidebar">
+  <h3>Decks</h3>
+  <div id="deckList"></div>
 
-<div class="card" id="card">Tap “Show Question” to begin</div>
+  <hr>
 
-<button class="study-btn show-answer" id="showBtn" onclick="showAnswer()">Show Question</button>
+  <input id="newDeckName" placeholder="New Deck Name">
+  <button onclick="addDeck()">Add Deck</button>
 
-<button class="study-btn correct hidden" id="correctBtn" onclick="gradeCard(true)">Correct</button>
-<button class="study-btn incorrect hidden" id="incorrectBtn" onclick="gradeCard(false)">Incorrect</button>
+  <hr>
 
-<p>Retention: <span id="retention">0%</span></p>
+  <button onclick="restartDeck()">Restart Deck</button>
+  <button onclick="deleteDeck()">Delete Deck</button>
+  <button onclick="toggleMode()">Toggle Sequential/Shuffle</button>
+  <button onclick="markDone()">Mark Deck Done ✔</button>
 
-<hr>
+  <hr>
 
-<h3>Decks</h3>
-<input id="newDeck" placeholder="New Deck Name">
-<button onclick="addDeck()">Add Deck</button>
+  <h4>Add Card</h4>
+  <input id="newQ" placeholder="Question">
+  <input id="newA" placeholder="Answer">
+  <button onclick="addCard()">Add Card</button>
 
-<hr>
+  <hr>
 
-<h3>Import CSV</h3>
-<input type="file" id="csvFile">
-<button onclick="importCSV()">Import</button>
+  <input type="file" id="csvFile">
+  <button onclick="importCSV()">Import CSV</button>
+</div>
+
+<div id="overlay" onclick="toggleMenu()"></div>
+
+<div class="card" id="card">Open menu and select a deck</div>
+
+<button id="primaryBtn" class="study-btn show hidden" onclick="primaryAction()">Show Question</button>
+<button id="correctBtn" class="study-btn correct hidden" onclick="grade(true)">Correct</button>
+<button id="incorrectBtn" class="study-btn incorrect hidden" onclick="grade(false)">Incorrect</button>
 
 <script>
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('service-worker.js');
 }
 
-let data = JSON.parse(localStorage.getItem("studyData")) || {
-  decks: {},
-  stats: { correct:0, total:0 }
-};
+let data = JSON.parse(localStorage.getItem("studyData")) || { decks:{} };
 
-let currentDeck = null;
-let currentCard = null;
+let currentDeck=null;
+let sessionCards=[];
+let repeatQueue=[];
+let index=0;
+let firstQuestion=true;
 
-function save() {
-  localStorage.setItem("studyData", JSON.stringify(data));
+function save(){ localStorage.setItem("studyData",JSON.stringify(data)); }
+
+function toggleMenu(){
+  sidebar.classList.toggle("open");
+  overlay.classList.toggle("show");
 }
 
-function addDeck() {
-  const name = document.getElementById("newDeck").value.trim();
+function renderDecks(){
+  deckList.innerHTML="";
+  Object.keys(data.decks).forEach(name=>{
+    const d=document.createElement("div");
+    d.innerHTML=(data.decks[name].done?"✔ ":"")+name;
+    d.onclick=()=>startDeck(name);
+    deckList.appendChild(d);
+  });
+}
+renderDecks();
+
+function addDeck(){
+  const name=newDeckName.value.trim();
   if(!name) return;
-  data.decks[name] = [];
-  currentDeck = name;
+  data.decks[name]={cards:[],mode:"sequential",done:false};
   save();
   renderDecks();
 }
 
-function renderDecks() {
-  const select = document.getElementById("deckSelect");
-  select.innerHTML = "";
-  Object.keys(data.decks).forEach(deck=>{
-    const opt = document.createElement("option");
-    opt.value = deck;
-    opt.textContent = deck;
-    select.appendChild(opt);
-  });
-  if(!currentDeck) currentDeck = Object.keys(data.decks)[0];
-  select.value = currentDeck;
-
-  select.onchange = e=>{
-    currentDeck = e.target.value;
-    // RESET STATE when deck changes
-    currentCard = null;
-    card.innerHTML = 'Tap “Show Question” to begin';
-    showBtn.classList.remove("hidden");
-    correctBtn.classList.add("hidden");
-    incorrectBtn.classList.add("hidden");
-  };
+function deleteDeck(){
+  if(!currentDeck) return;
+  delete data.decks[currentDeck];
+  currentDeck=null;
+  save();
+  renderDecks();
+  card.innerHTML="Deck deleted.";
 }
 
-function getDueCards() {
-  if(!data.decks[currentDeck]) return [];
-  return data.decks[currentDeck].filter(c=>c.next<=Date.now());
-}
-
-function loadQuestion() {
-  const due = getDueCards();
-  if(due.length === 0) {
-    card.innerHTML = "No cards due.";
-    showBtn.classList.add("hidden");
-    return;
-  }
-
-  currentCard = due[Math.floor(Math.random()*due.length)];
-  card.innerHTML = currentCard.q;
-
-  showBtn.textContent = "Show Answer";
+function startDeck(name){
+  currentDeck=name;
+  firstQuestion=true;
+  repeatQueue=[];
+  sessionCards=[...data.decks[name].cards];
+  if(data.decks[name].mode==="shuffle")
+    sessionCards.sort(()=>Math.random()-0.5);
+  index=0;
+  primaryBtn.textContent="Show Question";
+  primaryBtn.classList.remove("hidden");
   correctBtn.classList.add("hidden");
   incorrectBtn.classList.add("hidden");
+  card.innerHTML="Ready.";
+  toggleMenu();
 }
 
-function showAnswer() {
-  if(!currentCard) {
-    loadQuestion();
-    return;
+function primaryAction(){
+  if(firstQuestion){
+    showQuestion();
+    firstQuestion=false;
+  } else {
+    showAnswer();
   }
+}
 
-  card.innerHTML = currentCard.a +
-    (currentCard.img ? `<img src="${currentCard.img}">` : "");
+function showQuestion(){
+  if(index>=sessionCards.length){
+    if(repeatQueue.length>0){
+      sessionCards=repeatQueue;
+      repeatQueue=[];
+      index=0;
+    } else {
+      card.innerHTML="Deck Complete.";
+      return;
+    }
+  }
+  card.innerHTML=sessionCards[index].q;
+  primaryBtn.textContent="Show Answer";
+}
 
-  showBtn.classList.add("hidden");
+function showAnswer(){
+  card.innerHTML=sessionCards[index].a;
+  primaryBtn.classList.add("hidden");
   correctBtn.classList.remove("hidden");
   incorrectBtn.classList.remove("hidden");
 }
 
-function gradeCard(correct) {
-  data.stats.total++;
-  if(correct){
-    data.stats.correct++;
-    currentCard.interval *= 2;
-  } else {
-    currentCard.interval = 1;
-  }
-
-  currentCard.next = Date.now() + currentCard.interval * 86400000;
-
-  save();
-  updateRetention();
-
-  currentCard = null;
+function grade(correct){
+  if(!correct) repeatQueue.push(sessionCards[index]);
+  index++;
   correctBtn.classList.add("hidden");
   incorrectBtn.classList.add("hidden");
-  showBtn.classList.remove("hidden");
-  showBtn.textContent = "Show Question";
-  card.innerHTML = "Tap “Show Question” for next card";
+  primaryBtn.classList.remove("hidden");
+  primaryBtn.textContent="Show Answer";
+  showQuestion();
 }
 
-function updateRetention(){
-  if(data.stats.total === 0) return;
-  retention.textContent =
-    Math.round((data.stats.correct/data.stats.total)*100)+"%";
+function restartDeck(){
+  if(!currentDeck) return;
+  startDeck(currentDeck);
 }
-updateRetention();
 
-/* CSV FORMAT:
-   Column 1 = Question
-   Column 2 = Answer
-   File name (without .csv) = Deck name
-*/
+function toggleMode(){
+  if(!currentDeck) return;
+  const deck=data.decks[currentDeck];
+  deck.mode=deck.mode==="sequential"?"shuffle":"sequential";
+  save();
+}
+
+function markDone(){
+  if(!currentDeck) return;
+  data.decks[currentDeck].done=!data.decks[currentDeck].done;
+  save();
+  renderDecks();
+}
+
+function addCard(){
+  if(!currentDeck) return;
+  const q=newQ.value.trim();
+  const a=newA.value.trim();
+  if(!q||!a) return;
+  data.decks[currentDeck].cards.push({q,a});
+  newQ.value=""; newA.value="";
+  save();
+}
+
 function importCSV(){
-  const file = csvFile.files[0];
+  const file=csvFile.files[0];
   if(!file) return;
+  const deckName=file.name.replace(".csv","");
+  if(!data.decks[deckName])
+    data.decks[deckName]={cards:[],mode:"sequential",done:false};
 
-  const deckName = file.name.replace(".csv","");
-
-  if(!data.decks[deckName]) data.decks[deckName]=[];
-
-  const reader = new FileReader();
-  reader.onload = function(e){
-    const rows = e.target.result.split("\n");
+  const reader=new FileReader();
+  reader.onload=e=>{
+    const rows=e.target.result.split("\n");
     rows.forEach(r=>{
       if(!r.trim()) return;
-      const [q,a] = r.split(",");
-      if(q && a){
-        data.decks[deckName].push({
-          q:q.trim(),
-          a:a.trim(),
-          img:null,
-          interval:1,
-          next:Date.now()
-        });
-      }
+      const [q,a]=r.split(",");
+      if(q&&a) data.decks[deckName].cards.push({q:q.trim(),a:a.trim()});
     });
-    currentDeck = deckName;
     save();
     renderDecks();
-    alert("Imported into deck: " + deckName);
   };
   reader.readAsText(file);
-}
-
-function toggleDark(){
-  document.body.classList.toggle("dark");
 }
 </script>
 
