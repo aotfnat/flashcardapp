@@ -6,6 +6,7 @@
 <title>Study Cards</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#111111" />
+
 <style>
 :root {
   --bg: #ffffff;
@@ -45,20 +46,24 @@ body {
 
 img {
   max-width:100%;
-  margin-top:10px;
+  margin-top:12px;
   border-radius:10px;
 }
 
-/* NEW BUTTON STYLES */
-.answer-btn {
+/* Primary study buttons */
+.study-btn {
   width:100%;
-  padding:22px 0;   /* roughly double previous height */
+  padding:22px 0;
   margin:8px 0;
   border-radius:10px;
   border:none;
   font-size:18px;
   font-weight:600;
   color:white;
+}
+
+.show-answer {
+  background:#333;
 }
 
 .correct {
@@ -69,13 +74,8 @@ img {
   background:#c62828;
 }
 
-button {
-  padding:10px 16px;
-  margin:5px;
-  border-radius:8px;
-  border:none;
-  background:#333;
-  color:white;
+.hidden {
+  display:none;
 }
 
 select, input {
@@ -83,10 +83,6 @@ select, input {
   margin:5px;
   width:100%;
   max-width:400px;
-}
-
-.ipad body {
-  max-width:1200px;
 }
 </style>
 </head>
@@ -96,24 +92,15 @@ select, input {
 
 <select id="deckSelect"></select>
 <button onclick="toggleDark()">Dark Mode</button>
-<button onclick="toggleLayout()">iPhone/iPad</button>
 
-<div class="card" onclick="flipCard()" id="card">Tap to Begin</div>
+<div class="card" id="card">Tap “Show Question” to begin</div>
 
-<div>
-  <button class="answer-btn correct" onclick="markCard(true)">Correct</button>
-  <button class="answer-btn incorrect" onclick="markCard(false)">Incorrect</button>
-</div>
+<button class="study-btn show-answer" id="showBtn" onclick="showAnswer()">Show Question</button>
+
+<button class="study-btn correct hidden" id="correctBtn" onclick="gradeCard(true)">Correct</button>
+<button class="study-btn incorrect hidden" id="incorrectBtn" onclick="gradeCard(false)">Incorrect</button>
 
 <p>Retention: <span id="retention">0%</span></p>
-
-<hr>
-
-<h3>Add Card</h3>
-<input id="question" placeholder="Question"><br>
-<input id="answer" placeholder="Answer"><br>
-<input type="file" id="imageUpload"><br>
-<button onclick="addCard()">Add</button>
 
 <hr>
 
@@ -123,10 +110,9 @@ select, input {
 
 <hr>
 
-<h3>Import / Export</h3>
+<h3>Import CSV</h3>
 <input type="file" id="csvFile">
-<button onclick="importCSV()">Import CSV</button>
-<button onclick="exportCSV()">Export CSV</button>
+<button onclick="importCSV()">Import</button>
 
 <script>
 if ('serviceWorker' in navigator) {
@@ -140,7 +126,6 @@ let data = JSON.parse(localStorage.getItem("studyData")) || {
 
 let currentDeck = null;
 let currentCard = null;
-let showingAnswer = false;
 
 function save() {
   localStorage.setItem("studyData", JSON.stringify(data));
@@ -172,87 +157,71 @@ function renderDecks() {
 }
 renderDecks();
 
-function addCard() {
-  const q = question.value.trim();
-  const a = answer.value.trim();
-  if(!q || !a || !currentDeck) return;
-
-  const file = imageUpload.files[0];
-  if(file) {
-    const reader = new FileReader();
-    reader.onload = function() {
-      saveCard(q,a,reader.result);
-    };
-    reader.readAsDataURL(file);
-  } else {
-    saveCard(q,a,null);
-  }
-}
-
-function saveCard(q,a,img) {
-  data.decks[currentDeck].push({
-    q,a,img,
-    interval:1,
-    next:Date.now()
-  });
-  save();
-  question.value="";
-  answer.value="";
-  imageUpload.value="";
-}
-
 function getDueCards() {
+  if(!data.decks[currentDeck]) return [];
   return data.decks[currentDeck].filter(c=>c.next<=Date.now());
 }
 
-function flipCard() {
-  if(!currentDeck) return;
+function loadQuestion() {
   const due = getDueCards();
-  if(due.length===0){
-    card.innerHTML="No cards due.";
+  if(due.length === 0) {
+    card.innerHTML = "No cards due.";
+    showBtn.classList.add("hidden");
     return;
   }
-  if(!currentCard){
-    currentCard = due[Math.floor(Math.random()*due.length)];
-    showingAnswer=false;
-  }
-  card.innerHTML = showingAnswer ?
-    currentCard.a + (currentCard.img?`<img src="${currentCard.img}">`:"") :
-    currentCard.q;
+
+  currentCard = due[Math.floor(Math.random()*due.length)];
+  card.innerHTML = currentCard.q;
+
+  showBtn.textContent = "Show Answer";
+  correctBtn.classList.add("hidden");
+  incorrectBtn.classList.add("hidden");
 }
 
-function markCard(correct) {
-  if(!currentCard) return;
+function showAnswer() {
+  if(!currentCard) {
+    loadQuestion();
+    return;
+  }
+
+  card.innerHTML = currentCard.a +
+    (currentCard.img ? `<img src="${currentCard.img}">` : "");
+
+  showBtn.classList.add("hidden");
+  correctBtn.classList.remove("hidden");
+  incorrectBtn.classList.remove("hidden");
+}
+
+function gradeCard(correct) {
   data.stats.total++;
   if(correct){
     data.stats.correct++;
-    currentCard.interval *=2;
+    currentCard.interval *= 2;
   } else {
-    currentCard.interval =1;
+    currentCard.interval = 1;
   }
-  currentCard.next = Date.now() + currentCard.interval*86400000;
-  currentCard=null;
+
+  currentCard.next = Date.now() + currentCard.interval * 86400000;
+
   save();
   updateRetention();
-  card.innerHTML="Next card...";
+
+  currentCard = null;
+  correctBtn.classList.add("hidden");
+  incorrectBtn.classList.add("hidden");
+  showBtn.classList.remove("hidden");
+  showBtn.textContent = "Show Question";
+  card.innerHTML = "Tap “Show Question” for next card";
 }
 
 function updateRetention(){
-  if(data.stats.total===0) return;
+  if(data.stats.total === 0) return;
   retention.textContent =
     Math.round((data.stats.correct/data.stats.total)*100)+"%";
 }
 updateRetention();
 
-function toggleDark(){
-  document.body.classList.toggle("dark");
-}
-
-function toggleLayout(){
-  document.body.classList.toggle("ipad");
-}
-
-/* UPDATED CSV FORMAT:
+/* CSV FORMAT:
    Column 1 = Question
    Column 2 = Answer
    File name (without .csv) = Deck name
@@ -289,20 +258,9 @@ function importCSV(){
   reader.readAsText(file);
 }
 
-
-function exportCSV(){
-  if(!currentDeck) return;
-  let csv="";
-  data.decks[currentDeck].forEach(c=>{
-    csv+=`${c.q},${c.a}\n`;
-  });
-  const blob = new Blob([csv], {type:"text/csv"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download=currentDeck+".csv";
-  a.click();
+function toggleDark(){
+  document.body.classList.toggle("dark");
 }
-
 </script>
 
 </body>
