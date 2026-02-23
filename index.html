@@ -151,11 +151,17 @@ function renderDecks() {
   });
   if(!currentDeck) currentDeck = Object.keys(data.decks)[0];
   select.value = currentDeck;
+
   select.onchange = e=>{
     currentDeck = e.target.value;
+    // RESET STATE when deck changes
+    currentCard = null;
+    card.innerHTML = 'Tap “Show Question” to begin';
+    showBtn.classList.remove("hidden");
+    correctBtn.classList.add("hidden");
+    incorrectBtn.classList.add("hidden");
   };
 }
-renderDecks();
 
 function getDueCards() {
   if(!data.decks[currentDeck]) return [];
