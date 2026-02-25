@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Study Cards</title>
 
 <style>
@@ -60,13 +60,16 @@ img {
 
 .menuBtn {
   position:fixed;
-  top:10px;
-  left:10px;
+  top: env(safe-area-inset-top, 0px);
+  left: env(safe-area-inset-left, 0px);
+  margin-top: 12px;
+  margin-left: 12px;
   font-size:26px;
   background:none;
   color:white;
   border:none;
-  z-index:1100;
+  z-index:2000;
+  display: block;
 }
 
 input, textarea, select {
