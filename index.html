@@ -2,7 +2,8 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Study Cards</title>
+<title>FlashCards</title>
+<link rel="manifest" href="manifest.json">
 
 <style>
 body {
@@ -165,17 +166,26 @@ function renderDecks(){
     div.onclick=()=>{
       currentDeck=name;
       startSession();
-      renderEditor();
       toggleMenu();
     };
     list.appendChild(div);
   });
 }
 
-function addDeck(){
-  const name=prompt("Deck name?");
-  if(!name) return;
-  data.decks[name]={cards:[],mode:"sequential",done:false};
+function addDeck() {
+  const name = prompt("Deck name?");
+  if (!name) return;
+
+  // Initialize the deck and store a copy of the original cards
+  const newDeck = {
+    cards: [],
+    originalCards: [],
+    mode: "sequential",
+    done: false,
+    completed: false, // Track completion state
+  };
+
+  data.decks[name] = newDeck;
   save();
   renderDecks();
 }
@@ -209,16 +219,32 @@ function restartDeck(){
   startSession();
 }
 
-function startSession(){
-  currentIndex=0;
-  repeatQueue=[];
-  showingAnswer=false;
-  firstShow=true;
-  document.getElementById("card").innerText='Tap “Show Question” to begin';
-  document.getElementById("showBtn").innerText="Show Question";
-  document.getElementById("showBtn").style.display="block";
-  document.getElementById("correctBtn").style.display="none";
-  document.getElementById("incorrectBtn").style.display="none";
+function startSession() {
+  const deck = data.decks[currentDeck];
+
+  // Ensure originalCards is available before resetting
+  if (!deck.originalCards || !Array.isArray(deck.originalCards)) {
+    console.error("Error: originalCards is not properly initialized.");
+    return;
+  }
+
+  // If the deck was completed previously, we will reset it with the original cards
+  if (deck.completed) {
+    deck.cards = [...deck.originalCards]; // Reset to the full deck from originalCards
+    deck.completed = false;               // Mark the deck as not completed
+  }
+
+  currentIndex = 0;
+  repeatQueue = []; // Reset the repeat queue (incorrect answers)
+  showingAnswer = false;
+  firstShow = true;
+  
+  // Set up the card display
+  document.getElementById("card").innerText = 'Tap “Show Question” to begin';
+  document.getElementById("showBtn").innerText = "Show Question";
+  document.getElementById("showBtn").style.display = "block";
+  document.getElementById("correctBtn").style.display = "none";
+  document.getElementById("incorrectBtn").style.display = "none";
 }
 
 function handleShow(){
@@ -259,24 +285,28 @@ function showAnswer(){
   showingAnswer=true;
 }
 
-function grade(correct){
-  const deck=data.decks[currentDeck];
-  if(!correct) repeatQueue.push(deck.cards[currentIndex]);
+function grade(correct) {
+  const deck = data.decks[currentDeck];
+  if (!correct) {
+    repeatQueue.push(deck.cards[currentIndex]); // Add incorrect cards to repeatQueue
+  }
 
-  document.getElementById("correctBtn").style.display="none";
-  document.getElementById("incorrectBtn").style.display="none";
-  document.getElementById("showBtn").style.display="block";
-  document.getElementById("showBtn").innerText="Show Answer";
+  document.getElementById("correctBtn").style.display = "none";
+  document.getElementById("incorrectBtn").style.display = "none";
+  document.getElementById("showBtn").style.display = "block";
+  document.getElementById("showBtn").innerText = "Show Answer";
 
   currentIndex++;
 
-  if(currentIndex>=deck.cards.length){
-    if(repeatQueue.length>0){
-      deck.cards = repeatQueue;
-      repeatQueue=[];
-      currentIndex=0;
+  // Check if all cards are done
+  if (currentIndex >= deck.cards.length) {
+    if (repeatQueue.length > 0) {
+      deck.cards = repeatQueue; // Use only repeat cards if there are any
+      repeatQueue = [];         // Clear repeat queue after cycling through incorrect answers
+      currentIndex = 0;         // Restart at the first repeat card
     } else {
-      document.getElementById("card").innerText="Deck Complete!";
+      deck.completed = true;    // Mark deck as completed when all cards are correctly answered
+      document.getElementById("card").innerText = "Deck Complete!";
       return;
     }
   }
@@ -328,27 +358,63 @@ function parseCSV(text) {
   return rows;
 }
 
-function importCSV(){
-  const file=document.getElementById("csvFile").files[0];
-  if(!file) return;
+function importCSV() {
+  const file = document.getElementById("csvFile").files[0];
+  if (!file) return;
 
-  const deckName=file.name.replace(".csv","");
-  if(!data.decks[deckName])
-    data.decks[deckName]={cards:[],mode:"sequential",done:false};
+  const deckName = file.name.replace(".csv", "");
+  
+  // Initialize the deck if it doesn't exist
+  if (!data.decks[deckName]) {
+    data.decks[deckName] = { cards: [], originalCards: [], mode: "sequential", done: false };
+  }
 
-  const reader=new FileReader();
-  reader.onload=e=>{
-    const rows=parseCSV(e.target.result);
-    rows.forEach(r=>{
-      if(r.length>=2){
-        data.decks[deckName].cards.push({q:r[0],a:r[1],img:null});
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const rows = parseCSV(e.target.result);
+    
+    // Add the cards to the deck and also initialize originalCards
+    rows.forEach(r => {
+      if (r.length >= 2) {
+        const card = { q: r[0], a: r[1], img: null };
+        data.decks[deckName].cards.push(card);
+        data.decks[deckName].originalCards.push(card); // Ensure originalCards is populated
       }
     });
+
     save();
     renderDecks();
     alert("Import complete.");
   };
   reader.readAsText(file);
+}
+
+function addCard() {
+  if (!currentDeck) return;
+  const q = document.getElementById("newQ").value;
+  const a = document.getElementById("newA").value;
+  const imgFile = document.getElementById("newImg").files[0];
+
+  const card = { q, a, img: null };
+
+  if (imgFile) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      card.img = e.target.result;
+      const deck = data.decks[currentDeck];
+      deck.cards.push(card);
+      deck.originalCards.push(card); // Save a copy of the original card
+      save();
+      renderDecks();
+    };
+    reader.readAsDataURL(imgFile);
+  } else {
+    const deck = data.decks[currentDeck];
+    deck.cards.push(card);
+    deck.originalCards.push(card); // Save a copy of the original card
+    save();
+    renderDecks();
+  }
 }
 
 renderDecks();
