@@ -15,24 +15,79 @@ body {
   overflow-x:hidden;
 }
 
+.bottom-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 16px 20px;
+  background: #111;
+  border-top: 1px solid #333;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+  box-sizing: border-box;
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}
+
 button {
-  padding:18px;
-  margin:8px;
-  font-size:18px;
-  border:none;
-  border-radius:10px;
-  width:90%;
-  max-width:500px;
+  padding: 16px;
+  margin: 0;               /* remove previous margin */
+  font-size: 17px;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 420px;
+  box-sizing: border-box;
+  touch-action: manipulation;   /* better touch response */
+}
+
+@media (min-width: 400px) {
+  .bottom-bar {
+    flex-direction: row;
+    justify-content: center;
+    gap: 16px;
+    padding: 16px 24px;
+  }
+  
+  .bottom-bar button {
+    width: auto;
+    min-width: 140px;
+    flex: 1;
+    max-width: 220px;
+  }
 }
 
 #showBtn { background:#444; color:white; }
 #correctBtn { background:#1e8e3e; display:none; }
 #incorrectBtn { background:#c62828; display:none; }
 
+.main-content-area {
+  min-height: 100vh;
+  padding: 60px 20px 180px;   /* top for menu button, bottom for bar */
+  box-sizing: border-box;
+}
+
 #card {
-  margin:80px 20px 20px;
-  font-size:22px;
-  min-height:120px;
+  margin: 80px 20px 20px;
+  font-size: 22px;
+  min-height: 120px;
+  
+  /* Core changes */
+  text-align: center;           /* centers inline content (including the inner block) */
+  line-height: 1.45;
+  
+  /* Let the inner content take only the width it needs */
+  display: flex;
+  justify-content: center;      /* horizontal centering */
+  align-items: center;          /* vertical centering — optional but nice */
+}
+
+#card > div.inner {             /* ← we'll wrap the text in a div */
+  text-align: left;             /* left-align the actual lines */
+  max-width: 90%;               /* or 85% / 480px / whatever feels best */
+  width: fit-content;           /* shrinks to content width, but won't exceed max-width */
 }
 
 img {
@@ -70,7 +125,6 @@ menuBtn {
 
 .sidebar.open { transform:translateX(0); }
 
-
 input, textarea, select {
   width:100%;
   margin:5px 0;
@@ -80,14 +134,39 @@ input, textarea, select {
 }
 
 .deckItem {
-  padding:6px;
-  cursor:pointer;
+  padding: 10px 12px;
+  cursor: pointer;
+  border-radius: 8px;
+  margin: 4px 0;
+  transition: all 0.15s ease;
+}
+
+.deckItem:hover {
+  background: #333;
+}
+
+.deckItem.active {
+  background: #444;
+  color: #8bc34a;           /* light green for success/active feel */
+  font-weight: bold;
+  border-left: 4px solid #8bc34a;
+  padding-left: 8px;        /* compensate for border width */
+}
+
+.deckItem.done {
+  color: #66bb6a;
 }
 
 .deckItem.done::after {
-  content:" ✔";
-  color:#1e8e3e;
+  content: " ✔";
+  color: #8bc34a;
 }
+
+.deckItem.done.active {
+  background: #2e7d32;      /* darker green when both done + active */
+  border-left-color: #a5d6a7;
+}
+
 </style>
 </head>
 <body>
@@ -132,11 +211,17 @@ input, textarea, select {
 
 </div>
 
-<div id="card">Tap “Show Question” to begin</div>
+<div class="main-content-area">
 
-<button id="showBtn" onclick="handleShow()">Show Question</button>
-<button id="correctBtn" onclick="grade(true)">Correct</button>
-<button id="incorrectBtn" onclick="grade(false)">Incorrect</button>
+	<div id="card">Tap “Show Question” to begin</div>
+
+</div>
+
+<div class="bottom-bar">
+  <button id="showBtn" onclick="handleShow()">Show Question</button>
+  <button id="correctBtn" onclick="grade(true)">Correct</button>
+  <button id="incorrectBtn" onclick="grade(false)">Incorrect</button>
+</div>
 
 <script>
 let data = JSON.parse(localStorage.getItem("studyData")) || {decks:{}};
@@ -151,23 +236,47 @@ function save(){
   localStorage.setItem("studyData", JSON.stringify(data));
 }
 
+function nl2br(str) {
+  if (!str) return '';
+  // First escape HTML (prevent <script> etc.), then convert newlines
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
+
 function toggleMenu(){
   document.getElementById("sidebar").classList.toggle("open");
 }
 
-function renderDecks(){
+function renderDecks() {
   const list = document.getElementById("deckList");
-  list.innerHTML="";
-  Object.keys(data.decks).forEach(name=>{
-    const div=document.createElement("div");
-    div.textContent=name;
-    div.className="deckItem";
-    if(data.decks[name].done) div.classList.add("done");
-    div.onclick=()=>{
-      currentDeck=name;
+  list.innerHTML = "";
+
+  Object.keys(data.decks).forEach(name => {
+    const div = document.createElement("div");
+    div.textContent = name;
+    div.className = "deckItem";
+
+    // Add classes based on state
+    if (data.decks[name].done) {
+      div.classList.add("done");
+    }
+    if (name === currentDeck) {
+      div.classList.add("active");
+    }
+
+    const cardCount = data.decks[name].cards.length;
+    div.textContent = `${name} (${cardCount})`;
+
+    div.onclick = () => {
+      currentDeck = name;
       startSession();
-      toggleMenu();
+      toggleMenu();           // optional: close sidebar after selection
+      renderDecks();          // ← re-render to update highlight
     };
+
     list.appendChild(div);
   });
 }
@@ -221,6 +330,11 @@ function restartDeck(){
 
 function startSession() {
   const deck = data.decks[currentDeck];
+  // Reset button to normal "Show Question" behavior
+  const showBtn = document.getElementById("showBtn");
+  showBtn.innerText = "Show Question";
+  showBtn.onclick = handleShow;               // ← restore original handler
+  showBtn.style.display = "block";
 
   // Ensure originalCards is available before resetting
   if (!deck.originalCards || !Array.isArray(deck.originalCards)) {
@@ -245,6 +359,9 @@ function startSession() {
   document.getElementById("showBtn").style.display = "block";
   document.getElementById("correctBtn").style.display = "none";
   document.getElementById("incorrectBtn").style.display = "none";
+
+  renderDecks();   // ← ensures highlight updates if coming from restart/complete
+
 }
 
 function handleShow(){
@@ -270,7 +387,10 @@ function showQuestion(){
     currentIndex=Math.floor(Math.random()*cards.length);
   }
   const card=cards[currentIndex];
-  document.getElementById("card").innerHTML=card.q+(card.img?'<br><img src="'+card.img+'">':"");
+  let questionHtml = nl2br(card.q);   // assuming you have nl2br from before
+  document.getElementById("card").innerHTML = 
+    '<div class="inner">' + questionHtml + '</div>' +
+    (card.img ? '<br><img src="' + card.img + '">' : "");
   document.getElementById("showBtn").innerText="Show Answer";
   showingAnswer=false;
 }
@@ -278,7 +398,10 @@ function showQuestion(){
 function showAnswer(){
   const deck=data.decks[currentDeck];
   const card=deck.cards[currentIndex];
-  document.getElementById("card").innerHTML=card.a+(card.img?'<br><img src="'+card.img+'">':"");
+  let answerHtml = nl2br(card.a);
+  document.getElementById("card").innerHTML = 
+    '<div class="inner">' + answerHtml + '</div>' +
+    (card.img ? '<br><img src="' + card.img + '">' : "");
   document.getElementById("showBtn").style.display="none";
   document.getElementById("correctBtn").style.display="block";
   document.getElementById("incorrectBtn").style.display="block";
@@ -298,15 +421,28 @@ function grade(correct) {
 
   currentIndex++;
 
-  // Check if all cards are done
+// Check if all cards are done
   if (currentIndex >= deck.cards.length) {
     if (repeatQueue.length > 0) {
-      deck.cards = repeatQueue; // Use only repeat cards if there are any
-      repeatQueue = [];         // Clear repeat queue after cycling through incorrect answers
-      currentIndex = 0;         // Restart at the first repeat card
+      deck.cards = repeatQueue;
+      repeatQueue = [];
+      currentIndex = 0;
+      showQuestion();
     } else {
-      deck.completed = true;    // Mark deck as completed when all cards are correctly answered
-      document.getElementById("card").innerText = "Deck Complete!";
+      deck.completed = true;
+      document.getElementById("card").innerHTML = 
+        '<strong>Deck Complete!</strong><br><br>';
+      
+      // Change button to "Restart Deck"
+      const showBtn = document.getElementById("showBtn");
+      showBtn.innerText = "Restart Deck";
+      showBtn.onclick = restartDeck;           // ← override the click handler
+      
+      // Make sure other buttons are hidden
+      document.getElementById("correctBtn").style.display = "none";
+      document.getElementById("incorrectBtn").style.display = "none";
+      showBtn.style.display = "block";
+      
       return;
     }
   }
@@ -314,45 +450,65 @@ function grade(correct) {
   showQuestion();
 }
 
-/* ---------- CSV PARSER ---------- */
 
 function parseCSV(text) {
   const rows = [];
-  let current = '';
   let row = [];
+  let field = '';
   let inQuotes = false;
+  let i = 0;
 
-  for (let i = 0; i < text.length; i++) {
+  // Add a sentinel newline at the end to flush the last field/row
+  text += '\n';
+
+  while (i < text.length) {
     const char = text[i];
-    const next = text[i + 1];
+    const next = text[i + 1] || '';
 
     if (char === '"' && inQuotes && next === '"') {
-      current += '"';
-      i++;
-    } 
-    else if (char === '"') {
-      inQuotes = !inQuotes;
-    } 
-    else if (char === ',' && !inQuotes) {
-      row.push(current.trim());
-      current = '';
-    } 
-    else if ((char === '\n' || char === '\r') && !inQuotes) {
-      if (current || row.length) {
-        row.push(current.trim());
-        rows.push(row);
-        row = [];
-        current = '';
-      }
-    } 
-    else {
-      current += char;
+      // Escaped quote inside quoted field → keep one "
+      field += '"';
+      i += 2;
+      continue;
     }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      i++;
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      row.push(field.trim());
+      field = '';
+      i++;
+      continue;
+    }
+
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      // End of row (only if not inside quotes)
+      if (char === '\r' && next === '\n') i++; // skip LF after CR
+      row.push(field.trim());
+      if (row.some(v => v !== '')) {   // skip completely empty rows
+        rows.push(row);
+      }
+      row = [];
+      field = '';
+      i++;
+      continue;
+    }
+
+    // Normal character
+    field += char;
+    i++;
   }
 
-  if (current || row.length) {
-    row.push(current.trim());
-    rows.push(row);
+  // Final flush if file didn't end with newline
+  if (field || row.length) {
+    row.push(field.trim());
+    if (row.some(v => v !== '')) {
+      rows.push(row);
+    }
   }
 
   return rows;
@@ -418,6 +574,12 @@ function addCard() {
 }
 
 renderDecks();
+
+if (!currentDeck && Object.keys(data.decks).length > 0) {
+  currentDeck = Object.keys(data.decks)[0];  // auto-select first deck
+  startSession();
+}
+
 </script>
 </body>
 </html>
