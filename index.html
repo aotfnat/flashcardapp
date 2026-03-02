@@ -108,6 +108,28 @@ menuBtn {
   z-index:2000;
 }
 
+.closeBtn {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: none;
+  border: none;
+  color: #ccc;
+  font-size: 36px;
+  width: 44px;         
+  height: 44px;
+  line-height: 44px;    /* vertically centers the × inside the button */
+  text-align: center;   /* horizontally centers the × inside the button */
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.closeBtn:hover {
+  color: white;
+}
+
 .sidebar {
   position:fixed;
   top:0;
@@ -174,6 +196,8 @@ input, textarea, select {
 <button class="menuBtn" onclick="toggleMenu()">☰</button>
 
 <div class="sidebar" id="sidebar">
+  <button class="closeBtn" onclick="toggleMenu()">×</button>
+
 <h3>Decks</h3>
 <div id="deckList"></div>
 
@@ -275,9 +299,54 @@ function renderDecks() {
       startSession();
       toggleMenu();           // optional: close sidebar after selection
       renderDecks();          // ← re-render to update highlight
+      renderCardList();
     };
 
     list.appendChild(div);
+  });
+}
+
+function renderCardList() {
+  const list = document.getElementById("cardList");
+  list.innerHTML = "";
+
+  if (!currentDeck) {
+    list.innerHTML = "<p style='color:#888;'>Select a deck first</p>";
+    return;
+  }
+
+  const deck = data.decks[currentDeck];
+  if (deck.cards.length === 0) {
+    list.innerHTML = "<p style='color:#888;'>No cards yet</p>";
+    return;
+  }
+
+  deck.cards.forEach((card, index) => {
+    const item = document.createElement("div");
+    item.className = "deckItem";  // reuse style for consistency
+    item.style.padding = "8px 12px";
+    item.style.whiteSpace = "nowrap";
+    item.style.overflow = "hidden";
+    item.style.textOverflow = "ellipsis";
+
+    // Show first 40 chars of question + image indicator
+    let preview = card.q.substring(0, 40);
+    if (card.q.length > 40) preview += "...";
+    if (card.img) preview += " [img]";
+
+    item.textContent = preview || "(empty question)";
+
+    item.onclick = () => {
+      editingIndex = index;
+      document.getElementById("editQ").value = card.q;
+      document.getElementById("editA").value = card.a;
+      // Image can't be pre-filled easily — we only allow replacing
+      document.getElementById("editor").style.display = "block";
+      // Optional: scroll to editor
+      document.getElementById("editor").scrollIntoView({ behavior: "smooth" });
+    };
+
+    list.appendChild(item);
   });
 }
 
@@ -330,10 +399,9 @@ function restartDeck(){
 
 function startSession() {
   const deck = data.decks[currentDeck];
-  // Reset button to normal "Show Question" behavior
   const showBtn = document.getElementById("showBtn");
   showBtn.innerText = "Show Question";
-  showBtn.onclick = handleShow;               // ← restore original handler
+  showBtn.onclick = handleShow;               
   showBtn.style.display = "block";
 
   // Ensure originalCards is available before resetting
@@ -361,6 +429,7 @@ function startSession() {
   document.getElementById("incorrectBtn").style.display = "none";
 
   renderDecks();   // ← ensures highlight updates if coming from restart/complete
+  renderCardList();
 
 }
 
@@ -570,7 +639,73 @@ function addCard() {
     deck.originalCards.push(card); // Save a copy of the original card
     save();
     renderDecks();
+    renderCardList();
   }
+}
+
+function saveEdit() {
+  if (!currentDeck || editingIndex === null) return;
+
+  const deck = data.decks[currentDeck];
+  const newQ = document.getElementById("editQ").value.trim();
+  const newA = document.getElementById("editA").value.trim();
+  const imgFile = document.getElementById("editImg").files[0];
+
+  if (!newQ || !newA) {
+    alert("Question and Answer cannot be empty.");
+    return;
+  }
+
+  // Update the card
+  deck.cards[editingIndex].q = newQ;
+  deck.cards[editingIndex].a = newA;
+
+  if (imgFile) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      deck.cards[editingIndex].img = e.target.result;
+      finishSave();
+    };
+    reader.readAsDataURL(imgFile);
+  } else {
+    finishSave();
+  }
+
+  function finishSave() {
+    // Also update originalCards at same index (assuming parallel arrays)
+    if (deck.originalCards && deck.originalCards[editingIndex]) {
+      deck.originalCards[editingIndex] = { ...deck.cards[editingIndex] };
+    }
+
+    save();
+    renderCardList();                // refresh list
+    document.getElementById("editor").style.display = "none";
+    editingIndex = null;             // clear editing state
+    alert("Card updated.");
+  }
+}
+
+function deleteCard() {
+  if (!currentDeck || editingIndex === null) return;
+
+  if (!confirm("Delete this card permanently?")) return;
+
+  const deck = data.decks[currentDeck];
+
+  deck.cards.splice(editingIndex, 1);
+  if (deck.originalCards) {
+    deck.originalCards.splice(editingIndex, 1);
+  }
+
+  save();
+  renderCardList();
+  document.getElementById("editor").style.display = "none";
+  editingIndex = null;
+
+  // Optional: restart session to avoid index errors
+  startSession();
+
+  alert("Card deleted.");
 }
 
 renderDecks();
