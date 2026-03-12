@@ -59,6 +59,8 @@ button {
   }
 }
 
+
+
 #showBtn { background:#444; color:white; }
 #correctBtn { background:#1e8e3e; display:none; }
 #incorrectBtn { background:#c62828; display:none; }
@@ -67,6 +69,17 @@ button {
   min-height: 100vh;
   padding: 60px 20px 180px;   /* top for menu button, bottom for bar */
   box-sizing: border-box;
+}
+
+.main-content-area,
+#card,
+#card * {
+  pointer-events: auto;           /* default anyway */
+}
+
+#card {
+  position: relative;             /* creates new stacking context */
+  z-index: 10;                    /* low enough not to cover fixed buttons */
 }
 
 #card {
@@ -96,17 +109,70 @@ img {
   border-radius:8px;
 }
 
-/* Sidebar */
-menuBtn {
-  position:fixed;
-  top: 10px;
-  left: 10px;
-  font-size:26px;
-  background:none;
-  color:white;
-  border:none;
-  z-index:2000;
+.top-icon-btn {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  width: 44px;
+  height: 44px;
+  font-size: 28px;
+  line-height: 44px;
+  text-align: center;
+  background: none;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s;
 }
+
+.top-icon-btn:hover,
+.top-icon-btn:active {
+  background: rgba(255, 255, 255, 0.15);
+  transform: scale(1.08);
+}
+
+.menuBtn {
+  right: calc(16px + env(safe-area-inset-right));
+  z-index: 2000;
+}
+
+.backFlipBtn {
+  left: calc(16px + env(safe-area-inset-left));
+  z-index: 1999;
+}
+
+/* Hide back button with sidebar */
+.sidebar.open ~ .backFlipBtn {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.card-counter {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: calc(70px + env(safe-area-inset-right));   /* space for menu button + margin */
+  z-index: 1995;                                     /* below menuBtn but above content */
+
+  font-size: 18px;
+  font-weight: 600;
+  color: #aaa;
+  background: rgba(0,0,0,0.4);
+  padding: 6px 12px;
+  border-radius: 20px;
+  min-width: 60px;
+  text-align: center;
+  line-height: 1.3;
+  pointer-events: none;                              /* so it doesn't block taps */
+  transition: opacity 0.25s;
+}
+
+.sidebar.open ~ .card-counter {
+  opacity: 0;
+}
+
 
 .closeBtn {
   position: absolute;
@@ -189,62 +255,159 @@ input, textarea, select {
   border-left-color: #a5d6a7;
 }
 
+.collapsible-section {
+  margin: 12px 0;
+}
+
+.collapsible-header {
+  margin: 0;
+  padding: 12px 16px;
+  background: #333;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.collapsible-header:hover {
+  background: #444;
+}
+
+.collapsible-header::after {
+  content: "▾";               /* down arrow when collapsed */
+  font-size: 1.2em;
+  transition: transform 0.25s ease;
+}
+
+.collapsible-section.open .collapsible-header::after {
+  transform: rotate(180deg);   /* up arrow when expanded */
+}
+
+.collapsible-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease-out, padding 0.3s ease-out;
+  padding: 0 16px;
+  background: #222;
+  border-radius: 0 0 8px 8px;
+}
+
+.collapsible-section.open .collapsible-content {
+  max-height: 2000px;          /* large enough for many cards + editor */
+  padding: 16px;
+}
+
+.editor-buttons {
+  display: flex;
+  flex-direction: column;        /* stack vertically */
+  gap: 10px;                     /* space between buttons */
+  margin-top: 16px;
+}
+
+.editor-buttons button {
+  width: 100%;                   /* full width of the sidebar content area */
+  padding: 14px;
+  font-size: 17px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* Specific colors - override your global button styles if needed */
+.editor-buttons button:nth-child(1) {  /* Save */
+  background: #1e8e3e;           /* green */
+  color: white;
+}
+
+.editor-buttons button:nth-child(2) {  /* Cancel */
+  background: #555;              /* neutral gray */
+  color: white;
+}
+
+.editor-buttons button:nth-child(3) {  /* Delete */
+  background: #c62828;           /* red */
+  color: white;
+}
+
+.editor-buttons button:hover {
+  opacity: 0.92;
+}
+
 </style>
 </head>
 <body>
 
-<button class="menuBtn" onclick="toggleMenu()">☰</button>
+<button class="top-icon-btn menuBtn" onclick="toggleMenu()">☰</button>
+<div id="cardCounter" class="card-counter">– / –</div>
+<button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()">←</button>
+
 
 <div class="sidebar" id="sidebar">
   <button class="closeBtn" onclick="toggleMenu()">×</button>
 
-<h3>Decks</h3>
-<div id="deckList"></div>
+  <h3>Decks</h3>
+  <div id="deckList"></div>
 
-<button onclick="addDeck()">Add Deck</button>
-<button onclick="deleteDeck()">Delete Deck</button>
-<button onclick="restartDeck()">Restart Deck</button>
-<button onclick="toggleMode()">Toggle Shuffle</button>
-<button onclick="markDone()">Mark Done ✔</button>
+  <button onclick="markDone()">Mark Done ✔</button>
+  <button onclick="restartDeck()">Restart Deck</button>
+  <button onclick="toggleMode()">Toggle Shuffle</button>
+  <button onclick="addDeck()">Add Deck</button>
+  <button onclick="deleteDeck()">Delete Deck</button>
 
-<hr>
+  <hr>
 
-<h3>Import CSV</h3>
-<input type="file" id="csvFile" accept=".csv">
-<button onclick="importCSV()">Import</button>
+  <h3>Import CSV</h3>
+  <input type="file" id="csvFile" accept=".csv" multiple>
+  <button onclick="importCSV()">Import</button>
+ 
+  <h3>Export Deck</h3>
+  <button onclick="exportCurrentDeck()">Export Current Deck as CSV</button>
 
-<hr>
+  <hr>
 
-<h3>Add Card</h3>
-<textarea id="newQ" placeholder="Question"></textarea>
-<textarea id="newA" placeholder="Answer"></textarea>
-<input type="file" id="newImg" accept="image/*">
-<button onclick="addCard()">Add Card</button>
+  <h3>Add Card</h3>
+  <textarea id="newQ" placeholder="Question"></textarea>
+  <textarea id="newA" placeholder="Answer"></textarea>
+  <input type="file" id="newImg" accept="image/*">
+  <button onclick="addCard()">Add Card</button>
 
-<hr>
+  <hr>
 
-<h3>Edit Cards</h3>
-<div id="cardList"></div>
-<div id="editor" style="display:none;">
-<textarea id="editQ"></textarea>
-<textarea id="editA"></textarea>
-<input type="file" id="editImg" accept="image/*">
-<button onclick="saveEdit()">Save</button>
-<button onclick="deleteCard()">Delete</button>
+  <div class="collapsible-section">
+    <h3 class="collapsible-header" onclick="toggleEditSection()">Edit Cards ▾</h3>
+  
+    <div class="collapsible-content" id="editSection">
+      <div id="cardList"></div>
+      <div id="editor" style="display:none;">
+        <textarea id="editQ" placeholder="Question"></textarea>
+        <textarea id="editA" placeholder="Answer"></textarea>
+        <input type="file" id="editImg" accept="image/*">
+      
+        <div class="editor-buttons">
+          <button onclick="saveEdit()">Save</button>
+          <button onclick="cancelEdit()">Cancel</button>
+          <button onclick="deleteCard()">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
-</div>
 
 <div class="main-content-area">
-
-	<div id="card">Tap “Show Question” to begin</div>
-
+  <div id="card">Tap “Show Question” to begin</div>
 </div>
 
 <div class="bottom-bar">
   <button id="showBtn" onclick="handleShow()">Show Question</button>
   <button id="correctBtn" onclick="grade(true)">Correct</button>
   <button id="incorrectBtn" onclick="grade(false)">Incorrect</button>
+  <button id="markDoneBtn" onclick="markDeckDone()" style="display:none; background:#2e7d32;">Mark Done ✔</button>
 </div>
 
 <script>
@@ -274,6 +437,69 @@ function toggleMenu(){
   document.getElementById("sidebar").classList.toggle("open");
 }
 
+function handleBackOrFlip() {
+  if (!currentDeck) return;
+
+  const showBtn = document.getElementById("showBtn");
+  const correctBtn = document.getElementById("correctBtn");
+  const incorrectBtn = document.getElementById("incorrectBtn");
+
+  console.log("Back/Flip tapped → showingAnswer:", showingAnswer, "index:", currentIndex);
+
+  if (showingAnswer || correctBtn.style.display !== "none") {
+    // Flip back to question (most common case)
+    showQuestion();
+    showBtn.style.display = "block";
+    showBtn.innerText = "Show Answer";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    showingAnswer = false;
+    return;
+  }
+
+  // Otherwise: go previous if possible
+  if (currentIndex > 0) {
+    currentIndex--;
+    showQuestion();
+    showBtn.style.display = "block";
+    showBtn.innerText = "Show Answer";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    showingAnswer = false;
+  }
+  // else: first card + question showing → do nothing
+}
+
+function updateBackButton() {
+  const btn = document.getElementById("backFlipBtn");
+  if (!currentDeck) {
+    btn.style.display = "none";
+    return;
+  }
+  btn.style.display = "block";
+
+  // Enable always when answer showing, or when not on first card
+  const shouldEnable = showingAnswer || currentIndex > 0;
+  btn.disabled = !shouldEnable;
+  btn.style.opacity = shouldEnable ? "1" : "0.4";
+}
+
+function updateCardCounter() {
+  const counter = document.getElementById("cardCounter");
+  if (!currentDeck || !data.decks[currentDeck]) {
+    counter.textContent = "– / –";
+    counter.style.opacity = "0.3";
+    return;
+  }
+
+  const deck = data.decks[currentDeck];
+  const total = deck.cards.length;
+  const current = total > 0 ? currentIndex + 1 : 0;  // 1-based for user-friendliness
+
+  counter.textContent = `${current} / ${total}`;
+  counter.style.opacity = "1";
+}
+
 function renderDecks() {
   const list = document.getElementById("deckList");
   list.innerHTML = "";
@@ -296,6 +522,8 @@ function renderDecks() {
 
     div.onclick = () => {
       currentDeck = name;
+      updateBackButton();
+      updateCardCounter();
       startSession();
       toggleMenu();           // optional: close sidebar after selection
       renderDecks();          // ← re-render to update highlight
@@ -385,6 +613,33 @@ function markDone(){
   renderDecks();
 }
 
+function markDeckDone() {
+  if (!currentDeck) return;
+  
+  // Toggle the done state (same logic as sidebar button)
+  data.decks[currentDeck].done = !data.decks[currentDeck].done;
+  save();
+  
+  // Refresh UI
+  renderDecks();
+  
+  // Optional: give feedback
+  const btn = document.getElementById("markDoneBtn");
+  if (data.decks[currentDeck].done) {
+    btn.innerText = "Done! ✔";
+    btn.style.opacity = "0.7";
+  } else {
+    btn.innerText = "Mark Done ✔";
+    btn.style.opacity = "1";
+  }
+  
+  // Optional: auto-hide after a few seconds
+  setTimeout(() => {
+    btn.innerText = "Mark Done ✔";
+    btn.style.opacity = "1";
+  }, 2000);
+}
+
 function toggleMode(){
   if(!currentDeck) return;
   const deck=data.decks[currentDeck];
@@ -430,6 +685,12 @@ function startSession() {
 
   renderDecks();   // ← ensures highlight updates if coming from restart/complete
   renderCardList();
+  const markBtn = document.getElementById("markDoneBtn");
+  markBtn.style.display = "none";
+  markBtn.innerText = "Mark Done ✔";
+  markBtn.style.opacity = "1";
+  updateBackButton();
+  updateCardCounter();
 
 }
 
@@ -462,6 +723,8 @@ function showQuestion(){
     (card.img ? '<br><img src="' + card.img + '">' : "");
   document.getElementById("showBtn").innerText="Show Answer";
   showingAnswer=false;
+  updateBackButton();
+  updateCardCounter();
 }
 
 function showAnswer(){
@@ -475,6 +738,8 @@ function showAnswer(){
   document.getElementById("correctBtn").style.display="block";
   document.getElementById("incorrectBtn").style.display="block";
   showingAnswer=true;
+  updateBackButton();
+  updateCardCounter();
 }
 
 function grade(correct) {
@@ -511,12 +776,16 @@ function grade(correct) {
       document.getElementById("correctBtn").style.display = "none";
       document.getElementById("incorrectBtn").style.display = "none";
       showBtn.style.display = "block";
+      document.getElementById("markDoneBtn").style.display = "block";
       
       return;
     }
   }
 
   showQuestion();
+  showingAnswer = false;
+  updateBackButton();
+  updateCardCounter();
 }
 
 
@@ -584,34 +853,144 @@ function parseCSV(text) {
 }
 
 function importCSV() {
-  const file = document.getElementById("csvFile").files[0];
-  if (!file) return;
-
-  const deckName = file.name.replace(".csv", "");
-  
-  // Initialize the deck if it doesn't exist
-  if (!data.decks[deckName]) {
-    data.decks[deckName] = { cards: [], originalCards: [], mode: "sequential", done: false };
+  const files = document.getElementById("csvFile").files;
+  if (!files || files.length === 0) {
+    alert("No files selected.");
+    return;
   }
 
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const rows = parseCSV(e.target.result);
-    
-    // Add the cards to the deck and also initialize originalCards
-    rows.forEach(r => {
-      if (r.length >= 2) {
-        const card = { q: r[0], a: r[1], img: null };
-        data.decks[deckName].cards.push(card);
-        data.decks[deckName].originalCards.push(card); // Ensure originalCards is populated
-      }
-    });
+  let importedCount = 0;
+  let errors = [];
 
-    save();
+  // Process each file sequentially (to avoid race conditions with save())
+  Array.from(files).forEach((file, idx) => {
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      errors.push(`Skipped ${file.name} — not a .csv file`);
+      return;
+    }
+
+    // Derive deck name from filename (remove .csv, clean up)
+    let deckName = file.name
+      .replace(/\.csv$/i, "")
+      .replace(/_/g, " ")
+      .trim();
+
+    if (!deckName) {
+      deckName = `Imported Deck ${importedCount + 1}`;
+    }
+
+    // Initialize deck if it doesn't exist
+    if (!data.decks[deckName]) {
+      data.decks[deckName] = {
+        cards: [],
+        originalCards: [],
+        mode: "sequential",
+        done: false,
+        completed: false
+      };
+    }
+
+    const deck = data.decks[deckName];
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const rows = parseCSV(e.target.result);
+
+        rows.forEach(r => {
+          if (r.length >= 2 && (r[0].trim() || r[1].trim())) {
+            const card = { q: r[0], a: r[1], img: null };
+            deck.cards.push(card);
+            deck.originalCards.push(card);
+          }
+        });
+
+        importedCount++;
+        save();  // save after each file — safe but can be batched if many files
+
+        // Final feedback after all files are done
+        if (importedCount + errors.length === files.length) {
+          finishImport();
+        }
+      } catch (err) {
+        errors.push(`Error in ${file.name}: ${err.message}`);
+        if (importedCount + errors.length === files.length) {
+          finishImport();
+        }
+      }
+    };
+
+    reader.onerror = () => {
+      errors.push(`Failed to read ${file.name}`);
+      if (importedCount + errors.length === files.length) {
+        finishImport();
+      }
+    };
+
+    reader.readAsText(file);
+  });
+
+  function finishImport() {
     renderDecks();
-    alert("Import complete.");
-  };
-  reader.readAsText(file);
+    document.getElementById("csvFile").value = ""; // clear input
+
+    let msg = `Successfully imported ${importedCount} deck${importedCount === 1 ? "" : "s"}.`;
+    if (errors.length > 0) {
+      msg += `\n\nErrors:\n${errors.join("\n")}`;
+    }
+    alert(msg);
+  }
+}
+
+function exportCurrentDeck() {
+  if (!currentDeck) {
+    alert("No deck selected.");
+    return;
+  }
+
+  const deck = data.decks[currentDeck];
+  if (deck.cards.length === 0) {
+    alert("This deck has no cards to export.");
+    return;
+  }
+
+  // Build CSV content
+  let csvContent = "Question,Answer\n"; // header
+
+  deck.cards.forEach(card => {
+    // Escape quotes and wrap fields in quotes
+    const question = `"${card.q.replace(/"/g, '""')}"`;
+    const answer   = `"${card.a.replace(/"/g, '""')}"`;
+    csvContent += `${question},${answer}\n`;
+  });
+
+  // Create Blob and trigger download
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", `${currentDeck.replace(/[^a-z0-9]/gi, ' ')}.csv`);
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  // Clean up
+  URL.revokeObjectURL(url);
+
+  // Optional feedback
+  alert(`Exported "${currentDeck}" (${deck.cards.length} cards)`);
+}
+
+function toggleEditSection() {
+  const section = document.querySelector(".collapsible-section");
+  section.classList.toggle("open");
+  
+  // Optional: refresh card list when opening (in case deck changed)
+  if (section.classList.contains("open")) {
+    renderCardList();
+  }
 }
 
 function addCard() {
@@ -706,6 +1085,19 @@ function deleteCard() {
   startSession();
 
   alert("Card deleted.");
+}
+
+function cancelEdit() {
+  // Hide the editor
+  document.getElementById("editor").style.display = "none";
+  
+  // Clear the editing state
+  editingIndex = null;
+  
+  // Optional: clear the form fields (good UX, prevents confusion)
+  document.getElementById("editQ").value = "";
+  document.getElementById("editA").value = "";
+  document.getElementById("editImg").value = "";  // resets file input
 }
 
 renderDecks();
