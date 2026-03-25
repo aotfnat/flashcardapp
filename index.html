@@ -59,11 +59,63 @@ button {
   }
 }
 
+#backFlipBtn {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: calc(16px + env(safe-area-inset-left));
+  z-index: 1999;
 
+  width: 44px;
+  height: 44px;
+  font-size: 28px;
+  line-height: 44px;
+  text-align: center;
+
+  background: none;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+
+  /* IMPORTANT: Hide by default */
+  display: none;
+  opacity: 0;
+
+  transition: opacity 0.2s, transform 0.15s;
+}
+
+#backFlipBtn:hover,
+#backFlipBtn:active {
+  background: rgba(255, 255, 255, 0.15);
+  transform: scale(1.08);
+}
+
+/* Show only when we have a deck */
+body.has-deck #backFlipBtn {
+  display: block;
+  opacity: 1;
+}
 
 #showBtn { background:#444; color:white; }
-#correctBtn { background:#1e8e3e; display:none; }
-#incorrectBtn { background:#c62828; display:none; }
+
+#correctBtn {
+  background: #1e8e3e;
+  color: white;
+  font-weight: 600;           /* slightly bolder */
+}
+
+#incorrectBtn {
+  background: #c62828;
+  color: white;
+  font-weight: 600;
+}
+
+#correctBtn:hover,
+#incorrectBtn:hover {
+  opacity: 0.95;
+}
 
 .main-content-area {
   min-height: 100vh;
@@ -134,17 +186,12 @@ img {
 }
 
 .menuBtn {
-  right: calc(16px + env(safe-area-inset-right));
+  left: calc(16px + env(safe-area-inset-right));
   z-index: 2000;
 }
 
-.backFlipBtn {
-  left: calc(16px + env(safe-area-inset-left));
-  z-index: 1999;
-}
-
 /* Hide back button with sidebar */
-.sidebar.open ~ .backFlipBtn {
+.sidebar.open ~ #backFlipBtn {
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
@@ -169,8 +216,11 @@ img {
   transition: opacity 0.25s;
 }
 
-.sidebar.open ~ .card-counter {
+.sidebar.open ~ .card-counter,
+.sidebar.open ~ #cardCounter {
   opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 
@@ -341,10 +391,6 @@ input, textarea, select {
 </head>
 <body>
 
-<button class="top-icon-btn menuBtn" onclick="toggleMenu()">☰</button>
-<div id="cardCounter" class="card-counter">– / –</div>
-<button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()">←</button>
-
 
 <div class="sidebar" id="sidebar">
   <button class="closeBtn" onclick="toggleMenu()">×</button>
@@ -398,6 +444,11 @@ input, textarea, select {
 
 </div>
 
+<button class="top-icon-btn menuBtn" onclick="toggleMenu()">☰</button>
+
+<button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()">←</button>
+
+<div id="cardCounter" class="card-counter">– / –</div>
 
 <div class="main-content-area">
   <div id="card">Tap “Show Question” to begin</div>
