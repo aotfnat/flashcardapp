@@ -387,6 +387,28 @@ input, textarea, select {
   opacity: 0.92;
 }
 
+#userAnswerArea {
+  display: none;
+  width: 100%;
+  max-width: 500px;
+  margin: 24px auto 16px;
+  padding: 16px;
+  font-size: 20px;
+  line-height: 1.5;
+  min-height: 160px;
+  background: #222;
+  color: white;
+  border: 2px solid #555;
+  border-radius: 12px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+#userAnswerArea:focus {
+  border-color: #8bc34a;
+  outline: none;
+}
+
 </style>
 </head>
 <body>
@@ -401,6 +423,7 @@ input, textarea, select {
   <button onclick="markDone()">Mark Done ✔</button>
   <button onclick="restartDeck()">Restart Deck</button>
   <button onclick="toggleMode()">Toggle Shuffle</button>
+  <button onclick="toggleInputMode()">User Input Mode: <span id="inputModeStatus">OFF</span></button>
   <button onclick="addDeck()">Add Deck</button>
   <button onclick="deleteDeck()">Delete Deck</button>
 
@@ -410,8 +433,22 @@ input, textarea, select {
   <input type="file" id="csvFile" accept=".csv" multiple>
   <button onclick="importCSV()">Import</button>
  
-  <h3>Export Deck</h3>
-  <button onclick="exportCurrentDeck()">Export Current Deck as CSV</button>
+  <h3>Export Decks</h3>
+  <button onclick="exportCurrentDeck()">Export Current Deck</button>
+  <button onclick="exportAllDecks()">Export All Decks (Backup)</button>
+
+  <p style="font-size:14px; color:#888; margin-top:8px; text-align:left;">
+  Tip: After tapping Export, choose "Save to Files" → "iCloud Drive" to back up and sync your decks across devices.
+  </p>
+
+  <h3>Restore from Backup</h3>
+  <input type="file" id="restoreFile" accept=".json,.csv" multiple>
+  <button onclick="restoreFromBackup()">Restore from File</button>
+
+  <p style="font-size:13px; color:#777; margin-top:8px;">
+  Upload a .json backup or .csv files.<br>
+  Warning: This will overwrite existing decks with the same name.
+  </p>
 
   <hr>
 
@@ -452,6 +489,7 @@ input, textarea, select {
 
 <div class="main-content-area">
   <div id="card">Tap “Show Question” to begin</div>
+  <textarea id="userAnswerArea" placeholder="Type or write your answer here..."></textarea>
 </div>
 
 <div class="bottom-bar">
@@ -469,6 +507,7 @@ let showingAnswer = false;
 let firstShow = true;
 let repeatQueue = [];
 let editingIndex = null;
+let userInputMode = false;   // default off
 
 function save(){
   localStorage.setItem("studyData", JSON.stringify(data));
@@ -699,6 +738,17 @@ function toggleMode(){
   alert("Mode: "+deck.mode);
 }
 
+function toggleInputMode() {
+  userInputMode = !userInputMode;
+  document.getElementById("inputModeStatus").textContent = userInputMode ? "ON" : "OFF";
+  
+  if (currentDeck) {
+    startSession();   // restart current deck with new mode
+  }
+  
+  alert("User Input Mode " + (userInputMode ? "ENABLED" : "DISABLED"));
+}
+
 function restartDeck(){
   startSession();
 }
@@ -761,36 +811,69 @@ function handleShow(){
   }
 }
 
-function showQuestion(){
-  const deck=data.decks[currentDeck];
-  let cards=deck.cards;
-  if(deck.mode==="shuffle"){
-    currentIndex=Math.floor(Math.random()*cards.length);
+function showQuestion() {
+  const deck = data.decks[currentDeck];
+  let cards = deck.cards;
+  if (deck.mode === "shuffle") {
+    currentIndex = Math.floor(Math.random() * cards.length);
   }
-  const card=cards[currentIndex];
-  let questionHtml = nl2br(card.q);   // assuming you have nl2br from before
+  const card = cards[currentIndex];
+
+  let questionHtml = nl2br(card.q);
   document.getElementById("card").innerHTML = 
     '<div class="inner">' + questionHtml + '</div>' +
     (card.img ? '<br><img src="' + card.img + '">' : "");
-  document.getElementById("showBtn").innerText="Show Answer";
-  showingAnswer=false;
+
+  // Show user input area if mode is on
+  const area = document.getElementById("userAnswerArea");
+  if (userInputMode) {
+    area.style.display = "block";
+    area.value = "";               // clear previous input
+  } else {
+    area.style.display = "none";
+  }
+
+  document.getElementById("showBtn").innerText = "Show Answer";
+  showingAnswer = false;
   updateBackButton();
   updateCardCounter();
 }
 
-function showAnswer(){
-  const deck=data.decks[currentDeck];
-  const card=deck.cards[currentIndex];
+function showAnswer() {
+  const deck = data.decks[currentDeck];
+  const card = deck.cards[currentIndex];
+
+  if (userInputMode) {
+    // Keep the question + user's input visible, then add the real answer below
+    let questionHtml = nl2br(card.q);
+    let userInput = document.getElementById("userAnswerArea").value.trim() || "(no answer entered)";
+
+    document.getElementById("card").innerHTML = 
+      //'<div class="inner">' + questionHtml + '</div>' +
+      //(card.img ? '<br><img src="' + card.img + '">' : "") +
+      //'<br><br><strong>Your Answer:</strong><br>' + userInput +
+      //'<br><br><strong>Correct Answer:</strong><br>' + 
+      nl2br(card.a);
+
+    document.getElementById("showBtn").style.display = "none";
+    document.getElementById("correctBtn").style.display = "block";
+    document.getElementById("incorrectBtn").style.display = "block";
+    showingAnswer = true;
+    updateBackButton();
+    return;
+  }
+
+  // Normal mode (no user input)
   let answerHtml = nl2br(card.a);
   document.getElementById("card").innerHTML = 
     '<div class="inner">' + answerHtml + '</div>' +
     (card.img ? '<br><img src="' + card.img + '">' : "");
-  document.getElementById("showBtn").style.display="none";
-  document.getElementById("correctBtn").style.display="block";
-  document.getElementById("incorrectBtn").style.display="block";
-  showingAnswer=true;
+
+  document.getElementById("showBtn").style.display = "none";
+  document.getElementById("correctBtn").style.display = "block";
+  document.getElementById("incorrectBtn").style.display = "block";
+  showingAnswer = true;
   updateBackButton();
-  updateCardCounter();
 }
 
 function grade(correct) {
@@ -995,7 +1078,7 @@ function importCSV() {
 
 function exportCurrentDeck() {
   if (!currentDeck) {
-    alert("No deck selected.");
+    alert("Please select a deck first.");
     return;
   }
 
@@ -1005,33 +1088,127 @@ function exportCurrentDeck() {
     return;
   }
 
-  // Build CSV content
-  let csvContent = "Question,Answer\n"; // header
+  let csvContent = "Question,Answer\n";
 
   deck.cards.forEach(card => {
-    // Escape quotes and wrap fields in quotes
     const question = `"${card.q.replace(/"/g, '""')}"`;
     const answer   = `"${card.a.replace(/"/g, '""')}"`;
     csvContent += `${question},${answer}\n`;
   });
 
-  // Create Blob and trigger download
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
 
   const link = document.createElement("a");
-  link.setAttribute("href", url);
-  link.setAttribute("download", `${currentDeck.replace(/[^a-z0-9]/gi, ' ')}.csv`);
-  link.style.display = "none";
+  link.href = url;
+  link.download = `${currentDeck.replace(/[^a-z0-9]/gi, '_')}.csv`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-
-  // Clean up
   URL.revokeObjectURL(url);
 
-  // Optional feedback
-  alert(`Exported "${currentDeck}" (${deck.cards.length} cards)`);
+  alert(`✅ Exported "${currentDeck}" (${deck.cards.length} cards)\n\nSave this file to iCloud Drive for backup and sync.`);
+}
+
+function exportAllDecks() {
+  const backup = {
+    version: "1.0",
+    exportedDate: new Date().toISOString(),
+    decks: data.decks
+  };
+
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `FlashCards_Backup_${new Date().toISOString().slice(0,10)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+
+  alert("Full backup created! Save this .json file to iCloud Drive.");
+}
+
+function restoreFromBackup() {
+  const files = document.getElementById("restoreFile").files;
+  if (!files || files.length === 0) {
+    alert("Please select a backup file (.json or .csv).");
+    return;
+  }
+
+  if (!confirm("⚠️ This will overwrite decks with the same name.\n\nContinue with restore?")) {
+    return;
+  }
+
+  let restoredCount = 0;
+  let skipped = 0;
+
+  Array.from(files).forEach(file => {
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      try {
+        const fileName = file.name.toLowerCase();
+
+        if (fileName.endsWith(".json")) {
+          // Full backup restore (JSON)
+          const backupData = JSON.parse(e.target.result);
+
+          if (backupData && backupData.decks) {
+            // Merge decks from backup
+            Object.keys(backupData.decks).forEach(deckName => {
+              data.decks[deckName] = backupData.decks[deckName];
+              restoredCount++;
+            });
+          } else {
+            alert("Invalid backup file format.");
+            return;
+          }
+        } 
+        else if (fileName.endsWith(".csv")) {
+          // Single deck from CSV (reuse your existing parser)
+          const deckName = file.name.replace(/\.csv$/i, "").trim() || "Restored Deck";
+          
+          if (!data.decks[deckName]) {
+            data.decks[deckName] = {
+              cards: [],
+              originalCards: [],
+              mode: "sequential",
+              done: false,
+              completed: false
+            };
+          }
+
+          const rows = parseCSV(e.target.result);
+          rows.forEach(r => {
+            if (r.length >= 2 && (r[0].trim() || r[1].trim())) {
+              const card = { q: r[0], a: r[1], img: null };
+              data.decks[deckName].cards.push(card);
+              data.decks[deckName].originalCards.push(card);
+            }
+          });
+          restoredCount++;
+        }
+
+        save();
+        renderDecks();
+
+      } catch (err) {
+        skipped++;
+        console.error("Restore error for", file.name, err);
+      }
+    };
+
+    reader.readAsText(file);
+  });
+
+  // Final message
+  setTimeout(() => {
+    let msg = `Restore complete!\n\n${restoredCount} deck${restoredCount === 1 ? '' : 's'} restored.`;
+    if (skipped > 0) msg += `\n${skipped} file(s) had errors.`;
+    alert(msg);
+    document.getElementById("restoreFile").value = ""; // clear input
+  }, 300);
 }
 
 function toggleEditSection() {
@@ -1045,10 +1222,19 @@ function toggleEditSection() {
 }
 
 function addCard() {
-  if (!currentDeck) return;
-  const q = document.getElementById("newQ").value;
-  const a = document.getElementById("newA").value;
+  if (!currentDeck) {
+    alert("Please select a deck first.");
+    return;
+  }
+
+  const q = document.getElementById("newQ").value.trim();
+  const a = document.getElementById("newA").value.trim();
   const imgFile = document.getElementById("newImg").files[0];
+
+  if (!q || !a) {
+    alert("Both Question and Answer are required.");
+    return;
+  }
 
   const card = { q, a, img: null };
 
@@ -1058,18 +1244,21 @@ function addCard() {
       card.img = e.target.result;
       const deck = data.decks[currentDeck];
       deck.cards.push(card);
-      deck.originalCards.push(card); // Save a copy of the original card
+      deck.originalCards.push(card);
       save();
       renderDecks();
+      renderCardList();     // refresh edit list if open
+      clearAddCardFields(); // ← clear the fields
     };
     reader.readAsDataURL(imgFile);
   } else {
     const deck = data.decks[currentDeck];
     deck.cards.push(card);
-    deck.originalCards.push(card); // Save a copy of the original card
+    deck.originalCards.push(card);
     save();
     renderDecks();
     renderCardList();
+    clearAddCardFields();   // ← clear the fields
   }
 }
 
@@ -1151,11 +1340,30 @@ function cancelEdit() {
   document.getElementById("editImg").value = "";  // resets file input
 }
 
+function clearAddCardFields() {
+  document.getElementById("newQ").value = "";
+  document.getElementById("newA").value = "";
+  document.getElementById("newImg").value = "";   // clears the file input
+}
+
 renderDecks();
 
 if (!currentDeck && Object.keys(data.decks).length > 0) {
   currentDeck = Object.keys(data.decks)[0];  // auto-select first deck
   startSession();
+}
+
+// Register Service Worker for offline support
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js')
+      .then(registration => {
+        console.log('Service Worker registered successfully');
+      })
+      .catch(error => {
+        console.log('Service Worker registration failed:', error);
+      });
+  });
 }
 
 </script>
