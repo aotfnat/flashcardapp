@@ -1,5 +1,5 @@
 // sw.js - Service Worker for offline support
-const CACHE_NAME = 'flashcards-v1';
+const CACHE_NAME = 'flashcards-v2';
 const urlsToCache = [
   './',                    // index.html
   'index.html',
