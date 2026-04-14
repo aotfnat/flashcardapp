@@ -409,6 +409,24 @@ input, textarea, select {
   outline: none;
 }
 
+#autoCloseMessage {
+  position: fixed;
+  top: calc(60px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.85);
+  color: #8bc34a;
+  padding: 10px 18px;
+  border-radius: 20px;
+  font-size: 15px;
+  font-weight: 500;
+  z-index: 3000;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 </style>
 </head>
 <body>
@@ -487,6 +505,8 @@ input, textarea, select {
 
 <div id="cardCounter" class="card-counter">– / –</div>
 
+<div id="autoCloseMessage">Auto-close paused for 15 seconds</div>
+
 <div class="main-content-area">
   <div id="card">Tap “Show Question” to begin</div>
   <textarea id="userAnswerArea" placeholder="Type or write your answer here..."></textarea>
@@ -508,6 +528,10 @@ let firstShow = true;
 let repeatQueue = [];
 let editingIndex = null;
 let userInputMode = false;   // default off
+let autoCloseEnabled = true;
+let lastDeckSelectionTime = 0;
+let timeSinceLastSelection = 0;
+const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 3 minutes in milliseconds is 3 * 60 * 1000
 
 function save(){
   localStorage.setItem("studyData", JSON.stringify(data));
@@ -523,8 +547,13 @@ function nl2br(str) {
     .replace(/\n/g, '<br>');
 }
 
-function toggleMenu(){
-  document.getElementById("sidebar").classList.toggle("open");
+function toggleMenu() {
+  const sidebar = document.getElementById("sidebar");
+  sidebar.classList.toggle("open");
+}
+
+function resetAutoClose() {
+  autoCloseEnabled = true;
 }
 
 function handleBackOrFlip() {
@@ -612,11 +641,25 @@ function renderDecks() {
 
     div.onclick = () => {
       currentDeck = name;
+
       updateBackButton();
       updateCardCounter();
       startSession();
-      toggleMenu();           // optional: close sidebar after selection
-      renderDecks();          // ← re-render to update highlight
+
+      const timeSinceLastSelection = Date.now() - lastDeckSelectionTime;
+
+      if (autoCloseEnabled && timeSinceLastSelection <= AUTO_CLOSE_GRACE_PERIOD) {
+        // Grace period is active → keep sidebar open and show message
+        //showAutoCloseMessage();
+      } else {
+        // Normal behavior: close the sidebar
+        toggleMenu();
+      }
+
+      // Update timestamp so grace period starts now
+      lastDeckSelectionTime = Date.now();
+
+      renderDecks();
       renderCardList();
     };
 
@@ -1344,6 +1387,16 @@ function clearAddCardFields() {
   document.getElementById("newQ").value = "";
   document.getElementById("newA").value = "";
   document.getElementById("newImg").value = "";   // clears the file input
+}
+
+function showAutoCloseMessage() {
+  const msg = document.getElementById("autoCloseMessage");
+  msg.style.opacity = "1";
+  
+  // Auto-hide after 2.5 seconds
+  setTimeout(() => {
+    msg.style.opacity = "0";
+  }, 2500);
 }
 
 renderDecks();
