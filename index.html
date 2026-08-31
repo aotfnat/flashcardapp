@@ -1,3 +1,10 @@
+<!-- index.html -->
+<!-- Version 1.18, SOC: Bug-fix pass — see script comment block for full details:
+     fixed service-worker filename mismatch, removed the deck.cards/originalCards
+     dual-array model that could corrupt saved decks during grading, added
+     localStorage load/save error handling, fixed shuffle mode, batched CSV/backup
+     saves, deduped Mark Done logic, fixed swapped safe-area-insets, removed dead
+     code, cached DOM lookups, added aria-labels. -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -62,7 +69,7 @@ button {
 #backFlipBtn {
   position: fixed;
   top: calc(10px + env(safe-area-inset-top));
-  right: calc(16px + env(safe-area-inset-left));
+  right: calc(16px + env(safe-area-inset-right));
   z-index: 1999;
 
   width: 44px;
@@ -186,7 +193,7 @@ img {
 }
 
 .menuBtn {
-  left: calc(16px + env(safe-area-inset-right));
+  left: calc(16px + env(safe-area-inset-left));
   z-index: 2000;
 }
 
@@ -249,7 +256,7 @@ img {
 .sidebar {
   position:fixed;
   top:0;
-  left:-260;
+  left:-260px;
   width:260px;
   height:100%;
   background:#222;
@@ -433,7 +440,7 @@ input, textarea, select {
 
 
 <div class="sidebar" id="sidebar">
-  <button class="closeBtn" onclick="toggleMenu()">×</button>
+  <button class="closeBtn" onclick="toggleMenu()" aria-label="Close menu">×</button>
 
   <h3>Decks</h3>
   <div id="deckList"></div>
@@ -499,9 +506,9 @@ input, textarea, select {
 
 </div>
 
-<button class="top-icon-btn menuBtn" onclick="toggleMenu()">☰</button>
+<button class="top-icon-btn menuBtn" onclick="toggleMenu()" aria-label="Open menu">☰</button>
 
-<button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()">←</button>
+<button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()" aria-label="Go back or flip card">←</button>
 
 <div id="cardCounter" class="card-counter">– / –</div>
 
@@ -520,21 +527,85 @@ input, textarea, select {
 </div>
 
 <script>
-let data = JSON.parse(localStorage.getItem("studyData")) || {decks:{}};
+let data = loadData();
 let currentDeck = null;
-let currentIndex = 0;
+
+// Session-only study state. Never persisted, and never written back onto
+// deck.cards — this is what used to happen (deck.cards got replaced by the
+// in-progress repeat queue), which could silently corrupt the saved deck if
+// any other action triggered a save() mid-session.
+let sessionQueue = [];
+let sessionIndex = 0;
+let repeatQueue = [];
+
 let showingAnswer = false;
 let firstShow = true;
-let repeatQueue = [];
 let editingIndex = null;
 let userInputMode = false;   // default off
 let autoCloseEnabled = true;
 let lastDeckSelectionTime = 0;
-let timeSinceLastSelection = 0;
-const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 3 minutes in milliseconds is 3 * 60 * 1000
+const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 1 minute in milliseconds
+
+// Cache frequently-used DOM lookups once instead of re-querying on every call.
+const cardEl = document.getElementById("card");
+const showBtn = document.getElementById("showBtn");
+const correctBtn = document.getElementById("correctBtn");
+const incorrectBtn = document.getElementById("incorrectBtn");
+const markDoneBtn = document.getElementById("markDoneBtn");
+const counterEl = document.getElementById("cardCounter");
+const backFlipBtn = document.getElementById("backFlipBtn");
+const userAnswerArea = document.getElementById("userAnswerArea");
+const deckListEl = document.getElementById("deckList");
+const cardListEl = document.getElementById("cardList");
+const sidebarEl = document.getElementById("sidebar");
+
+function loadData() {
+  const raw = localStorage.getItem("studyData");
+  if (!raw) return { decks: {} };
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.decks) {
+      throw new Error("Unexpected data shape");
+    }
+  } catch (err) {
+    console.error("Saved data was corrupted and could not be loaded:", err);
+    try { localStorage.setItem("studyData_corrupted_backup", raw); } catch (e) { /* best effort */ }
+    alert("Your saved flashcards couldn't be read and had to be reset. The unreadable data was kept under 'studyData_corrupted_backup' in local storage in case it can be recovered manually.");
+    return { decks: {} };
+  }
+
+  // One-time migration / cleanup for the old schema, which kept a parallel
+  // "originalCards" array and a "completed" flag. A past bug could leave
+  // deck.cards holding only a partial (repeat-queue) subset of the deck while
+  // originalCards still had the full set — prefer the more complete list.
+  Object.values(parsed.decks || {}).forEach(deck => {
+    if (Array.isArray(deck.originalCards) &&
+        deck.originalCards.length >= (Array.isArray(deck.cards) ? deck.cards.length : 0)) {
+      deck.cards = deck.originalCards;
+    }
+    if (!Array.isArray(deck.cards)) deck.cards = [];
+    delete deck.originalCards;
+    delete deck.completed;
+  });
+
+  return parsed;
+}
 
 function save(){
-  localStorage.setItem("studyData", JSON.stringify(data));
+  try {
+    localStorage.setItem("studyData", JSON.stringify(data));
+    return true;
+  } catch (err) {
+    console.error("Save failed:", err);
+    if (err && err.name === "QuotaExceededError") {
+      alert("Storage is full, so this change wasn't saved. Try removing an image, deleting some old cards, or exporting a deck and clearing it out.");
+    } else {
+      alert("Something went wrong saving your changes, so they weren't saved. Please try again.");
+    }
+    return false;
+  }
 }
 
 function nl2br(str) {
@@ -547,23 +618,20 @@ function nl2br(str) {
     .replace(/\n/g, '<br>');
 }
 
-function toggleMenu() {
-  const sidebar = document.getElementById("sidebar");
-  sidebar.classList.toggle("open");
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
 }
 
-function resetAutoClose() {
-  autoCloseEnabled = true;
+function toggleMenu() {
+  sidebarEl.classList.toggle("open");
 }
 
 function handleBackOrFlip() {
   if (!currentDeck) return;
-
-  const showBtn = document.getElementById("showBtn");
-  const correctBtn = document.getElementById("correctBtn");
-  const incorrectBtn = document.getElementById("incorrectBtn");
-
-  console.log("Back/Flip tapped → showingAnswer:", showingAnswer, "index:", currentIndex);
 
   if (showingAnswer || correctBtn.style.display !== "none") {
     // Flip back to question (most common case)
@@ -577,8 +645,8 @@ function handleBackOrFlip() {
   }
 
   // Otherwise: go previous if possible
-  if (currentIndex > 0) {
-    currentIndex--;
+  if (sessionIndex > 0) {
+    sessionIndex--;
     showQuestion();
     showBtn.style.display = "block";
     showBtn.innerText = "Show Answer";
@@ -590,45 +658,38 @@ function handleBackOrFlip() {
 }
 
 function updateBackButton() {
-  const btn = document.getElementById("backFlipBtn");
   if (!currentDeck) {
-    btn.style.display = "none";
+    backFlipBtn.style.display = "none";
     return;
   }
-  btn.style.display = "block";
+  backFlipBtn.style.display = "block";
 
-  // Enable always when answer showing, or when not on first card
-  const shouldEnable = showingAnswer || currentIndex > 0;
-  btn.disabled = !shouldEnable;
-  btn.style.opacity = shouldEnable ? "1" : "0.4";
+  const shouldEnable = showingAnswer || sessionIndex > 0;
+  backFlipBtn.disabled = !shouldEnable;
+  backFlipBtn.style.opacity = shouldEnable ? "1" : "0.4";
 }
 
 function updateCardCounter() {
-  const counter = document.getElementById("cardCounter");
   if (!currentDeck || !data.decks[currentDeck]) {
-    counter.textContent = "– / –";
-    counter.style.opacity = "0.3";
+    counterEl.textContent = "– / –";
+    counterEl.style.opacity = "0.3";
     return;
   }
 
-  const deck = data.decks[currentDeck];
-  const total = deck.cards.length;
-  const current = total > 0 ? currentIndex + 1 : 0;  // 1-based for user-friendliness
+  const total = sessionQueue.length;
+  const current = total > 0 ? sessionIndex + 1 : 0;  // 1-based for user-friendliness
 
-  counter.textContent = `${current} / ${total}`;
-  counter.style.opacity = "1";
+  counterEl.textContent = `${current} / ${total}`;
+  counterEl.style.opacity = "1";
 }
 
 function renderDecks() {
-  const list = document.getElementById("deckList");
-  list.innerHTML = "";
+  deckListEl.innerHTML = "";
 
   Object.keys(data.decks).forEach(name => {
     const div = document.createElement("div");
-    div.textContent = name;
     div.className = "deckItem";
 
-    // Add classes based on state
     if (data.decks[name].done) {
       div.classList.add("done");
     }
@@ -642,15 +703,13 @@ function renderDecks() {
     div.onclick = () => {
       currentDeck = name;
 
-      updateBackButton();
-      updateCardCounter();
       startSession();
 
       const timeSinceLastSelection = Date.now() - lastDeckSelectionTime;
 
       if (autoCloseEnabled && timeSinceLastSelection <= AUTO_CLOSE_GRACE_PERIOD) {
         // Grace period is active → keep sidebar open and show message
-        //showAutoCloseMessage();
+        showAutoCloseMessage();
       } else {
         // Normal behavior: close the sidebar
         toggleMenu();
@@ -663,22 +722,21 @@ function renderDecks() {
       renderCardList();
     };
 
-    list.appendChild(div);
+    deckListEl.appendChild(div);
   });
 }
 
 function renderCardList() {
-  const list = document.getElementById("cardList");
-  list.innerHTML = "";
+  cardListEl.innerHTML = "";
 
   if (!currentDeck) {
-    list.innerHTML = "<p style='color:#888;'>Select a deck first</p>";
+    cardListEl.innerHTML = "<p style='color:#888;'>Select a deck first</p>";
     return;
   }
 
   const deck = data.decks[currentDeck];
   if (deck.cards.length === 0) {
-    list.innerHTML = "<p style='color:#888;'>No cards yet</p>";
+    cardListEl.innerHTML = "<p style='color:#888;'>No cards yet</p>";
     return;
   }
 
@@ -703,11 +761,10 @@ function renderCardList() {
       document.getElementById("editA").value = card.a;
       // Image can't be pre-filled easily — we only allow replacing
       document.getElementById("editor").style.display = "block";
-      // Optional: scroll to editor
       document.getElementById("editor").scrollIntoView({ behavior: "smooth" });
     };
 
-    list.appendChild(item);
+    cardListEl.appendChild(item);
   });
 }
 
@@ -715,16 +772,12 @@ function addDeck() {
   const name = prompt("Deck name?");
   if (!name) return;
 
-  // Initialize the deck and store a copy of the original cards
-  const newDeck = {
+  data.decks[name] = {
     cards: [],
-    originalCards: [],
     mode: "sequential",
-    done: false,
-    completed: false, // Track completion state
+    done: false
   };
 
-  data.decks[name] = newDeck;
   save();
   renderDecks();
 }
@@ -733,43 +786,54 @@ function deleteDeck(){
   if(!currentDeck) return;
   if(confirm("Delete deck?")){
     delete data.decks[currentDeck];
-    currentDeck=null;
+    currentDeck = null;
+    sessionQueue = [];
+    sessionIndex = 0;
+
     save();
     renderDecks();
+
+    cardEl.innerText = 'Tap “Show Question” to begin';
+    showBtn.innerText = "Show Question";
+    showBtn.onclick = handleShow;
+    showBtn.style.display = "block";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "none";
+    updateBackButton();
+    updateCardCounter();
   }
+}
+
+// Shared by both the sidebar "Mark Done" button and the bottom-bar one —
+// previously these were two near-identical copies of the same toggle.
+function toggleDeckDone() {
+  if (!currentDeck) return undefined;
+  data.decks[currentDeck].done = !data.decks[currentDeck].done;
+  save();
+  renderDecks();
+  return data.decks[currentDeck].done;
 }
 
 function markDone(){
-  if(!currentDeck) return;
-  data.decks[currentDeck].done=!data.decks[currentDeck].done;
-  save();
-  renderDecks();
+  toggleDeckDone();
 }
 
 function markDeckDone() {
-  if (!currentDeck) return;
-  
-  // Toggle the done state (same logic as sidebar button)
-  data.decks[currentDeck].done = !data.decks[currentDeck].done;
-  save();
-  
-  // Refresh UI
-  renderDecks();
-  
-  // Optional: give feedback
-  const btn = document.getElementById("markDoneBtn");
-  if (data.decks[currentDeck].done) {
-    btn.innerText = "Done! ✔";
-    btn.style.opacity = "0.7";
+  const isDone = toggleDeckDone();
+  if (isDone === undefined) return;
+
+  if (isDone) {
+    markDoneBtn.innerText = "Done! ✔";
+    markDoneBtn.style.opacity = "0.7";
   } else {
-    btn.innerText = "Mark Done ✔";
-    btn.style.opacity = "1";
+    markDoneBtn.innerText = "Mark Done ✔";
+    markDoneBtn.style.opacity = "1";
   }
-  
-  // Optional: auto-hide after a few seconds
+
   setTimeout(() => {
-    btn.innerText = "Mark Done ✔";
-    btn.style.opacity = "1";
+    markDoneBtn.innerText = "Mark Done ✔";
+    markDoneBtn.style.opacity = "1";
   }, 2000);
 }
 
@@ -784,11 +848,11 @@ function toggleMode(){
 function toggleInputMode() {
   userInputMode = !userInputMode;
   document.getElementById("inputModeStatus").textContent = userInputMode ? "ON" : "OFF";
-  
+
   if (currentDeck) {
     startSession();   // restart current deck with new mode
   }
-  
+
   alert("User Input Mode " + (userInputMode ? "ENABLED" : "DISABLED"));
 }
 
@@ -798,51 +862,43 @@ function restartDeck(){
 
 function startSession() {
   const deck = data.decks[currentDeck];
-  const showBtn = document.getElementById("showBtn");
-  showBtn.innerText = "Show Question";
-  showBtn.onclick = handleShow;               
-  showBtn.style.display = "block";
-
-  // Ensure originalCards is available before resetting
-  if (!deck.originalCards || !Array.isArray(deck.originalCards)) {
-    console.error("Error: originalCards is not properly initialized.");
+  if (!deck || !Array.isArray(deck.cards)) {
+    console.error("Cannot start session: deck or deck.cards missing/invalid for", currentDeck);
+    alert("This deck's data looks invalid and can't be studied. Try re-importing it or removing it.");
     return;
   }
 
-  // If the deck was completed previously, we will reset it with the original cards
-  if (deck.completed) {
-    deck.cards = [...deck.originalCards]; // Reset to the full deck from originalCards
-    deck.completed = false;               // Mark the deck as not completed
-  }
-
-  currentIndex = 0;
-  repeatQueue = []; // Reset the repeat queue (incorrect answers)
+  // Build a session-local study queue. Shuffle mode shuffles ONCE up front
+  // (a real Fisher–Yates shuffle) so every card is guaranteed to appear
+  // exactly once per pass — the old code re-randomized on every single card,
+  // which meant some cards could repeat while others never showed at all.
+  sessionQueue = deck.mode === "shuffle" ? shuffle(deck.cards.slice()) : deck.cards.slice();
+  sessionIndex = 0;
+  repeatQueue = [];
   showingAnswer = false;
   firstShow = true;
-  
-  // Set up the card display
-  document.getElementById("card").innerText = 'Tap “Show Question” to begin';
-  document.getElementById("showBtn").innerText = "Show Question";
-  document.getElementById("showBtn").style.display = "block";
-  document.getElementById("correctBtn").style.display = "none";
-  document.getElementById("incorrectBtn").style.display = "none";
+
+  showBtn.innerText = "Show Question";
+  showBtn.onclick = handleShow;
+  showBtn.style.display = "block";
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  markDoneBtn.style.display = "none";
+  markDoneBtn.innerText = "Mark Done ✔";
+  markDoneBtn.style.opacity = "1";
+
+  cardEl.innerText = 'Tap “Show Question” to begin';
 
   renderDecks();   // ← ensures highlight updates if coming from restart/complete
   renderCardList();
-  const markBtn = document.getElementById("markDoneBtn");
-  markBtn.style.display = "none";
-  markBtn.innerText = "Mark Done ✔";
-  markBtn.style.opacity = "1";
   updateBackButton();
   updateCardCounter();
-
 }
 
 function handleShow(){
   if(!currentDeck) return;
-  const deck=data.decks[currentDeck];
-  if(deck.cards.length===0){
-    document.getElementById("card").innerText="No cards.";
+  if(sessionQueue.length===0){
+    cardEl.innerText="No cards.";
     return;
   }
 
@@ -855,52 +911,38 @@ function handleShow(){
 }
 
 function showQuestion() {
-  const deck = data.decks[currentDeck];
-  let cards = deck.cards;
-  if (deck.mode === "shuffle") {
-    currentIndex = Math.floor(Math.random() * cards.length);
-  }
-  const card = cards[currentIndex];
+  const card = sessionQueue[sessionIndex];
 
   let questionHtml = nl2br(card.q);
-  document.getElementById("card").innerHTML = 
+  cardEl.innerHTML =
     '<div class="inner">' + questionHtml + '</div>' +
     (card.img ? '<br><img src="' + card.img + '">' : "");
 
   // Show user input area if mode is on
-  const area = document.getElementById("userAnswerArea");
   if (userInputMode) {
-    area.style.display = "block";
-    area.value = "";               // clear previous input
+    userAnswerArea.style.display = "block";
+    userAnswerArea.value = "";               // clear previous input
   } else {
-    area.style.display = "none";
+    userAnswerArea.style.display = "none";
   }
 
-  document.getElementById("showBtn").innerText = "Show Answer";
+  showBtn.innerText = "Show Answer";
   showingAnswer = false;
   updateBackButton();
   updateCardCounter();
 }
 
 function showAnswer() {
-  const deck = data.decks[currentDeck];
-  const card = deck.cards[currentIndex];
+  const card = sessionQueue[sessionIndex];
 
   if (userInputMode) {
-    // Keep the question + user's input visible, then add the real answer below
-    let questionHtml = nl2br(card.q);
-    let userInput = document.getElementById("userAnswerArea").value.trim() || "(no answer entered)";
+    // The learner's free-text answer isn't auto-graded — just show the
+    // correct answer beneath it for self-comparison.
+    cardEl.innerHTML = nl2br(card.a);
 
-    document.getElementById("card").innerHTML = 
-      //'<div class="inner">' + questionHtml + '</div>' +
-      //(card.img ? '<br><img src="' + card.img + '">' : "") +
-      //'<br><br><strong>Your Answer:</strong><br>' + userInput +
-      //'<br><br><strong>Correct Answer:</strong><br>' + 
-      nl2br(card.a);
-
-    document.getElementById("showBtn").style.display = "none";
-    document.getElementById("correctBtn").style.display = "block";
-    document.getElementById("incorrectBtn").style.display = "block";
+    showBtn.style.display = "none";
+    correctBtn.style.display = "block";
+    incorrectBtn.style.display = "block";
     showingAnswer = true;
     updateBackButton();
     return;
@@ -908,53 +950,55 @@ function showAnswer() {
 
   // Normal mode (no user input)
   let answerHtml = nl2br(card.a);
-  document.getElementById("card").innerHTML = 
+  cardEl.innerHTML =
     '<div class="inner">' + answerHtml + '</div>' +
     (card.img ? '<br><img src="' + card.img + '">' : "");
 
-  document.getElementById("showBtn").style.display = "none";
-  document.getElementById("correctBtn").style.display = "block";
-  document.getElementById("incorrectBtn").style.display = "block";
+  showBtn.style.display = "none";
+  correctBtn.style.display = "block";
+  incorrectBtn.style.display = "block";
   showingAnswer = true;
   updateBackButton();
 }
 
 function grade(correct) {
-  const deck = data.decks[currentDeck];
+  const card = sessionQueue[sessionIndex];
   if (!correct) {
-    repeatQueue.push(deck.cards[currentIndex]); // Add incorrect cards to repeatQueue
+    repeatQueue.push(card); // Add incorrect cards to repeatQueue
   }
 
-  document.getElementById("correctBtn").style.display = "none";
-  document.getElementById("incorrectBtn").style.display = "none";
-  document.getElementById("showBtn").style.display = "block";
-  document.getElementById("showBtn").innerText = "Show Answer";
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  showBtn.style.display = "block";
+  showBtn.innerText = "Show Answer";
 
-  currentIndex++;
+  sessionIndex++;
 
-// Check if all cards are done
-  if (currentIndex >= deck.cards.length) {
+  // Check if all cards in this pass are done. Note: this only ever touches
+  // sessionQueue (session-local), never deck.cards — deck.cards (the
+  // persisted source of truth) is left untouched throughout the whole study
+  // session, so editing/deleting cards mid-session, or any other save()
+  // firing in the background, can no longer corrupt or reorder the deck.
+  if (sessionIndex >= sessionQueue.length) {
     if (repeatQueue.length > 0) {
-      deck.cards = repeatQueue;
+      sessionQueue = repeatQueue;
       repeatQueue = [];
-      currentIndex = 0;
+      sessionIndex = 0;
       showQuestion();
     } else {
-      deck.completed = true;
-      document.getElementById("card").innerHTML = 
+      cardEl.innerHTML =
         '<strong>Deck Complete!</strong><br><br>';
-      
+
       // Change button to "Restart Deck"
-      const showBtn = document.getElementById("showBtn");
       showBtn.innerText = "Restart Deck";
       showBtn.onclick = restartDeck;           // ← override the click handler
-      
+
       // Make sure other buttons are hidden
-      document.getElementById("correctBtn").style.display = "none";
-      document.getElementById("incorrectBtn").style.display = "none";
+      correctBtn.style.display = "none";
+      incorrectBtn.style.display = "none";
       showBtn.style.display = "block";
-      document.getElementById("markDoneBtn").style.display = "block";
-      
+      markDoneBtn.style.display = "block";
+
       return;
     }
   }
@@ -1036,13 +1080,16 @@ function importCSV() {
     return;
   }
 
+  const total = files.length;
+  let processed = 0;
   let importedCount = 0;
-  let errors = [];
+  const errors = [];
 
-  // Process each file sequentially (to avoid race conditions with save())
-  Array.from(files).forEach((file, idx) => {
+  Array.from(files).forEach((file) => {
     if (!file.name.toLowerCase().endsWith(".csv")) {
       errors.push(`Skipped ${file.name} — not a .csv file`);
+      processed++;
+      if (processed === total) finishImport();
       return;
     }
 
@@ -1053,17 +1100,15 @@ function importCSV() {
       .trim();
 
     if (!deckName) {
-      deckName = `Imported Deck ${importedCount + 1}`;
+      deckName = file.name; // fall back to the raw filename rather than a
+                            // counter-based name that could collide across files
     }
 
-    // Initialize deck if it doesn't exist
     if (!data.decks[deckName]) {
       data.decks[deckName] = {
         cards: [],
-        originalCards: [],
         mode: "sequential",
-        done: false,
-        completed: false
+        done: false
       };
     }
 
@@ -1076,38 +1121,30 @@ function importCSV() {
 
         rows.forEach(r => {
           if (r.length >= 2 && (r[0].trim() || r[1].trim())) {
-            const card = { q: r[0], a: r[1], img: null };
-            deck.cards.push(card);
-            deck.originalCards.push(card);
+            deck.cards.push({ q: r[0], a: r[1], img: null });
           }
         });
 
         importedCount++;
-        save();  // save after each file — safe but can be batched if many files
-
-        // Final feedback after all files are done
-        if (importedCount + errors.length === files.length) {
-          finishImport();
-        }
       } catch (err) {
         errors.push(`Error in ${file.name}: ${err.message}`);
-        if (importedCount + errors.length === files.length) {
-          finishImport();
-        }
+      } finally {
+        processed++;
+        if (processed === total) finishImport();
       }
     };
 
     reader.onerror = () => {
       errors.push(`Failed to read ${file.name}`);
-      if (importedCount + errors.length === files.length) {
-        finishImport();
-      }
+      processed++;
+      if (processed === total) finishImport();
     };
 
     reader.readAsText(file);
   });
 
   function finishImport() {
+    save();  // one save after every file has been processed, not one per file
     renderDecks();
     document.getElementById("csvFile").value = ""; // clear input
 
@@ -1183,6 +1220,8 @@ function restoreFromBackup() {
     return;
   }
 
+  const total = files.length;
+  let processed = 0;
   let restoredCount = 0;
   let skipped = 0;
 
@@ -1197,67 +1236,81 @@ function restoreFromBackup() {
           // Full backup restore (JSON)
           const backupData = JSON.parse(e.target.result);
 
-          if (backupData && backupData.decks) {
-            // Merge decks from backup
+          if (backupData && backupData.decks && typeof backupData.decks === "object") {
             Object.keys(backupData.decks).forEach(deckName => {
-              data.decks[deckName] = backupData.decks[deckName];
-              restoredCount++;
+              const incoming = backupData.decks[deckName];
+              // Validate shape before accepting — an invalid deck used to be
+              // able to sneak in and silently break startSession() later.
+              if (incoming && Array.isArray(incoming.cards)) {
+                data.decks[deckName] = {
+                  cards: incoming.cards,
+                  mode: incoming.mode === "shuffle" ? "shuffle" : "sequential",
+                  done: !!incoming.done
+                };
+                restoredCount++;
+              } else {
+                skipped++;
+                console.warn(`Skipped deck "${deckName}" in ${file.name}: missing/invalid cards array`);
+              }
             });
           } else {
-            alert("Invalid backup file format.");
-            return;
+            skipped++;
+            console.warn(`Invalid backup file format: ${file.name}`);
           }
-        } 
+        }
         else if (fileName.endsWith(".csv")) {
-          // Single deck from CSV (reuse your existing parser)
-          const deckName = file.name.replace(/\.csv$/i, "").trim() || "Restored Deck";
-          
+          // Single deck from CSV (reuse existing parser)
+          const deckName = file.name.replace(/\.csv$/i, "").trim() || file.name;
+
           if (!data.decks[deckName]) {
             data.decks[deckName] = {
               cards: [],
-              originalCards: [],
               mode: "sequential",
-              done: false,
-              completed: false
+              done: false
             };
           }
 
           const rows = parseCSV(e.target.result);
           rows.forEach(r => {
             if (r.length >= 2 && (r[0].trim() || r[1].trim())) {
-              const card = { q: r[0], a: r[1], img: null };
-              data.decks[deckName].cards.push(card);
-              data.decks[deckName].originalCards.push(card);
+              data.decks[deckName].cards.push({ q: r[0], a: r[1], img: null });
             }
           });
           restoredCount++;
         }
-
-        save();
-        renderDecks();
-
       } catch (err) {
         skipped++;
         console.error("Restore error for", file.name, err);
+      } finally {
+        processed++;
+        if (processed === total) finish();
       }
+    };
+
+    reader.onerror = () => {
+      skipped++;
+      processed++;
+      if (processed === total) finish();
     };
 
     reader.readAsText(file);
   });
 
-  // Final message
-  setTimeout(() => {
+  function finish() {
+    save(); // one save once every file has been handled, not one per file
+    renderDecks();
+
     let msg = `Restore complete!\n\n${restoredCount} deck${restoredCount === 1 ? '' : 's'} restored.`;
-    if (skipped > 0) msg += `\n${skipped} file(s) had errors.`;
+    if (skipped > 0) msg += `\n${skipped} item(s) skipped due to errors or invalid format.`;
     alert(msg);
     document.getElementById("restoreFile").value = ""; // clear input
-  }, 300);
+  }
 }
 
 function toggleEditSection() {
   const section = document.querySelector(".collapsible-section");
   section.classList.toggle("open");
-  
+
   // Optional: refresh card list when opening (in case deck changed)
   if (section.classList.contains("open")) {
     renderCardList();
@@ -1280,28 +1333,28 @@ function addCard() {
   }
 
   const card = { q, a, img: null };
+  const deck = data.decks[currentDeck];
+
+  const finish = () => {
+    deck.cards.push(card);
+    save();
+    renderDecks();
+    renderCardList();     // refresh edit list if open
+    clearAddCardFields(); // ← clear the fields
+  };
 
   if (imgFile) {
     const reader = new FileReader();
     reader.onload = e => {
       card.img = e.target.result;
-      const deck = data.decks[currentDeck];
-      deck.cards.push(card);
-      deck.originalCards.push(card);
-      save();
-      renderDecks();
-      renderCardList();     // refresh edit list if open
-      clearAddCardFields(); // ← clear the fields
+      finish();
+    };
+    reader.onerror = () => {
+      alert("Couldn't read the selected image — the card was not saved. Please try again.");
     };
     reader.readAsDataURL(imgFile);
   } else {
-    const deck = data.decks[currentDeck];
-    deck.cards.push(card);
-    deck.originalCards.push(card);
-    save();
-    renderDecks();
-    renderCardList();
-    clearAddCardFields();   // ← clear the fields
+    finish();
   }
 }
 
@@ -1318,9 +1371,19 @@ function saveEdit() {
     return;
   }
 
-  // Update the card
+  // Update the card. deck.cards is now the single source of truth (no more
+  // parallel originalCards array to keep in sync), so editingIndex always
+  // refers to the right card regardless of study-session state.
   deck.cards[editingIndex].q = newQ;
   deck.cards[editingIndex].a = newA;
+
+  function finishSave() {
+    save();
+    renderCardList();                // refresh list
+    document.getElementById("editor").style.display = "none";
+    editingIndex = null;             // clear editing state
+    alert("Card updated.");
+  }
 
   if (imgFile) {
     const reader = new FileReader();
@@ -1328,22 +1391,12 @@ function saveEdit() {
       deck.cards[editingIndex].img = e.target.result;
       finishSave();
     };
+    reader.onerror = () => {
+      alert("Couldn't read the selected image — no changes were saved. Please try again.");
+    };
     reader.readAsDataURL(imgFile);
   } else {
     finishSave();
-  }
-
-  function finishSave() {
-    // Also update originalCards at same index (assuming parallel arrays)
-    if (deck.originalCards && deck.originalCards[editingIndex]) {
-      deck.originalCards[editingIndex] = { ...deck.cards[editingIndex] };
-    }
-
-    save();
-    renderCardList();                // refresh list
-    document.getElementById("editor").style.display = "none";
-    editingIndex = null;             // clear editing state
-    alert("Card updated.");
   }
 }
 
@@ -1353,18 +1406,14 @@ function deleteCard() {
   if (!confirm("Delete this card permanently?")) return;
 
   const deck = data.decks[currentDeck];
-
   deck.cards.splice(editingIndex, 1);
-  if (deck.originalCards) {
-    deck.originalCards.splice(editingIndex, 1);
-  }
 
   save();
   renderCardList();
   document.getElementById("editor").style.display = "none";
   editingIndex = null;
 
-  // Optional: restart session to avoid index errors
+  // Restart session to avoid stale index issues
   startSession();
 
   alert("Card deleted.");
@@ -1373,10 +1422,10 @@ function deleteCard() {
 function cancelEdit() {
   // Hide the editor
   document.getElementById("editor").style.display = "none";
-  
+
   // Clear the editing state
   editingIndex = null;
-  
+
   // Optional: clear the form fields (good UX, prevents confusion)
   document.getElementById("editQ").value = "";
   document.getElementById("editA").value = "";
@@ -1392,7 +1441,7 @@ function clearAddCardFields() {
 function showAutoCloseMessage() {
   const msg = document.getElementById("autoCloseMessage");
   msg.style.opacity = "1";
-  
+
   // Auto-hide after 2.5 seconds
   setTimeout(() => {
     msg.style.opacity = "0";
@@ -1409,7 +1458,7 @@ if (!currentDeck && Object.keys(data.decks).length > 0) {
 // Register Service Worker for offline support
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js')
+    navigator.serviceWorker.register('service-worker.js')
       .then(registration => {
         console.log('Service Worker registered successfully');
       })
@@ -1418,7 +1467,6 @@ if ('serviceWorker' in navigator) {
       });
   });
 }
-
 </script>
 </body>
 </html>
