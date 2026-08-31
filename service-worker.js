@@ -7,7 +7,7 @@
 //     match; navigations fall back to the cached index.html, other requests get a
 //     minimal 503 response. Icons are cached best-effort so a missing icon file
 //     doesn't fail the whole install.
-const CACHE = "study-cards-v3";
+const CACHE = "study-cards-v1.1";
 
 const CORE_ASSETS = [
   "./",
