@@ -1,13 +1,12 @@
 //service-worker.js
-//Version 1.1
-//SOC: Fixed registration filename mismatch (index.html now registers this exact file).
-//     Added self.skipWaiting() + activate handler (clients.claim() + old-cache cleanup)
-//     so version bumps actually take effect without closing every tab.
-//     Fetch handler no longer leaves an unhandled rejection when offline with no cache
-//     match; navigations fall back to the cached index.html, other requests get a
-//     minimal 503 response. Icons are cached best-effort so a missing icon file
-//     doesn't fail the whole install.
-const CACHE = "study-cards-v1.1";
+//Version 1.2
+//SOC: Supports the new in-app "Check for Update" button (index.html). Core
+//     assets are now fetched with {cache:"reload"} during install so a
+//     forced update check (registration.update()) pulls truly fresh files
+//     instead of a stale HTTP-cached copy of index.html. Keep CACHE's version
+//     suffix bumped on every release — index.html's registration.update()
+//     call only detects a new worker when this file's bytes actually change.
+const CACHE = "study-cards-v1.2";
 
 const CORE_ASSETS = [
   "./",
@@ -22,14 +21,20 @@ const OPTIONAL_ASSETS = [
   "./icon-512.png"
 ];
 
+// Bypasses the HTTP cache so "Check for Update" reliably fetches the latest
+// deployed files instead of whatever the browser already had cached.
+function freshRequest(url) {
+  return new Request(url, { cache: "reload" });
+}
+
 self.addEventListener("install", e => {
   self.skipWaiting();
   e.waitUntil(
     caches.open(CACHE).then(cache => {
-      return cache.addAll(CORE_ASSETS).then(() => {
+      return cache.addAll(CORE_ASSETS.map(freshRequest)).then(() => {
         return Promise.all(
           OPTIONAL_ASSETS.map(asset =>
-            cache.add(asset).catch(err => {
+            cache.add(freshRequest(asset)).catch(err => {
               console.warn("Skipping optional asset (not found?):", asset, err);
             })
           )

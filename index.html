@@ -1,10 +1,12 @@
 <!-- index.html -->
-<!-- Version 1.1, SOC: Bug-fix pass — see script comment block for full details:
-     fixed service-worker filename mismatch, removed the deck.cards/originalCards
-     dual-array model that could corrupt saved decks during grading, added
-     localStorage load/save error handling, fixed shuffle mode, batched CSV/backup
-     saves, deduped Mark Done logic, fixed swapped safe-area-insets, removed dead
-     code, cached DOM lookups, added aria-labels. -->
+<!-- Version 1.2, SOC: Added an in-app update mechanism so the user no longer
+     has to delete and reinstall the PWA to get new versions. New "App Info"
+     section in the menu shows the current APP_VERSION and a "Check for
+     Update" button that calls registration.update() to force a check against
+     service-worker.js. Because the service worker already self-activates
+     (skipWaiting + clients.claim), a found update installs itself and fires
+     a 'controllerchange' event, which a single top-level listener uses to
+     reload the page exactly once. See script comment block for prior history. -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -504,6 +506,12 @@ input, textarea, select {
     </div>
   </div>
 
+  <hr>
+
+  <h3>App Info</h3>
+  <p id="appVersionLabel" style="color:#aaa; font-size:14px; margin:8px 0; text-align:left;">Version</p>
+  <button id="checkUpdateBtn" onclick="checkForUpdate()">Check for Update</button>
+
 </div>
 
 <button class="top-icon-btn menuBtn" onclick="toggleMenu()" aria-label="Open menu">☰</button>
@@ -545,6 +553,11 @@ let userInputMode = false;   // default off
 let autoCloseEnabled = true;
 let lastDeckSelectionTime = 0;
 const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 1 minute in milliseconds
+
+// Single source of truth for the version shown in the menu. Keep this in
+// step with the CACHE name in service-worker.js when releasing an update.
+const APP_VERSION = "1.2";
+let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
 const cardEl = document.getElementById("card");
@@ -1455,6 +1468,72 @@ if (!currentDeck && Object.keys(data.decks).length > 0) {
   startSession();
 }
 
+function initVersionDisplay() {
+  const label = document.getElementById("appVersionLabel");
+  if (label) label.textContent = "Version " + APP_VERSION;
+}
+initVersionDisplay();
+
+// Lets the user pull a new version from inside the app instead of having to
+// delete and reinstall it. service-worker.js's own SW already self-activates
+// (skipWaiting + clients.claim) as soon as it's installed, so all this needs
+// to do is (1) ask the browser to check service-worker.js for changes, and
+// (2) reflect the result in the button. The actual reload once an update
+// lands is handled by the single controllerchange listener below.
+function checkForUpdate() {
+  const btn = document.getElementById("checkUpdateBtn");
+
+  if (!('serviceWorker' in navigator)) {
+    alert("Updates aren't supported in this browser.");
+    return;
+  }
+
+  const finish = (message) => {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Check for Update";
+    }
+    if (message) alert(message);
+  };
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Checking...";
+  }
+
+  navigator.serviceWorker.getRegistration().then(reg => {
+    if (!reg) {
+      finish("No update service is registered yet for this app. Try closing and reopening it once.");
+      return;
+    }
+
+    let updateFound = false;
+    const onUpdateFound = () => {
+      updateFound = true;
+      if (btn) btn.textContent = "Installing update...";
+      // Leave the button in this state — the new worker activates itself
+      // and the controllerchange listener below will reload the page.
+    };
+    reg.addEventListener("updatefound", onUpdateFound);
+
+    reg.update()
+      .catch(err => console.error("Update check failed:", err))
+      .finally(() => {
+        // Give a moment for 'updatefound' to fire before assuming there's
+        // nothing new (checking itself is async and can be quick).
+        setTimeout(() => {
+          reg.removeEventListener("updatefound", onUpdateFound);
+          if (!updateFound) {
+            finish("You're already on the latest version (v" + APP_VERSION + ").");
+          }
+        }, 1500);
+      });
+  }).catch(err => {
+    console.error("Update check failed:", err);
+    finish("Couldn't check for updates. Check your connection and try again.");
+  });
+}
+
 // Register Service Worker for offline support
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -1465,6 +1544,15 @@ if ('serviceWorker' in navigator) {
       .catch(error => {
         console.log('Service Worker registration failed:', error);
       });
+  });
+
+  // A new service worker taking control (whether from checkForUpdate() or a
+  // background browser check) means fresh assets are cached and ready.
+  // Reload once so the user actually sees the new version.
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloadingForUpdate) return;
+    reloadingForUpdate = true;
+    window.location.reload();
   });
 }
 </script>
