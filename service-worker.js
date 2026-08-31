@@ -1,12 +1,14 @@
-//service-worker.js
-//Version 1.2
-//SOC: Supports the new in-app "Check for Update" button (index.html). Core
-//     assets are now fetched with {cache:"reload"} during install so a
-//     forced update check (registration.update()) pulls truly fresh files
-//     instead of a stale HTTP-cached copy of index.html. Keep CACHE's version
-//     suffix bumped on every release — index.html's registration.update()
-//     call only detects a new worker when this file's bytes actually change.
-const CACHE = "study-cards-v1.2";
+//service-worker.js Flashcard app
+//Version 1.3
+//SOC: Bumped CACHE version only (no logic changes here) so that the
+//     index.html menu-not-opening CSS fix propagates to existing installs
+//     via the in-app "Check for Update" button. registration.update() only
+//     detects a new worker when this file's bytes actually change, so
+//     without this bump, already-installed users would never receive the
+//     fix through auto-update — only fresh installs would get it.
+//     Prior history:
+
+const CACHE = "study-cards-v1.3";
 
 const CORE_ASSETS = [
   "./",
