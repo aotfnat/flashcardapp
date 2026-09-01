@@ -1,13 +1,28 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.3, SOC: Fixed a bug where tapping the hamburger menu button
-     appeared to do nothing. .sidebar was hidden using BOTH a static
-     "left:-260px" offset AND "transform:translateX(-100%)" stacked on top
-     of each other. Toggling the .open class only cleared the transform,
-     leaving the sidebar still sitting at left:-260px (its right edge exactly
-     at the viewport edge), so it never actually slid into view. Fixed by
-     using "left:0" as the base position and letting transform alone control
-     the hidden/visible state (translateX(-100%) / translateX(0)).
-     Prior history: -->
+<!-- Version 1.4, SOC: Reorganized the menu into four collapsible sections
+     (Decks, Add/Edit, Import/Export, Settings) using an accordion pattern —
+     opening one section auto-collapses the others, and Decks starts expanded
+     on load while the rest start collapsed. Moved Mark Done/Restart/Shuffle
+     into Decks; Add Deck/Delete Deck/Add Card/Edit Cards into Add/Edit;
+     Import CSV/Export/Restore into Import/Export; User Input Mode/App Info
+     into Settings. Delete Deck no longer assumes "the current deck" (it's
+     not shown next to the deck list anymore) — it now opens a two-step
+     modal: pick the deck from a dropdown (defaulting to the currently
+     selected deck), then confirm against the full deck name rendered with
+     word-wrapping so long names can't get clipped like they could with a
+     plain confirm()/prompt() dialog. Added small "Adding to:" / "Editing:"
+     labels above the Add Card and Edit Cards forms so the target deck is
+     always visible, since those controls are no longer next to the deck
+     list.
+     Prior history: Version 1.3, SOC: Fixed a bug where tapping the
+     hamburger menu button appeared to do nothing. .sidebar was hidden using
+     BOTH a static "left:-260px" offset AND "transform:translateX(-100%)"
+     stacked on top of each other. Toggling the .open class only cleared the
+     transform, leaving the sidebar still sitting at left:-260px (its right
+     edge exactly at the viewport edge), so it never actually slid into
+     view. Fixed by using "left:0" as the base position and letting
+     transform alone control the hidden/visible state
+     (translateX(-100%) / translateX(0)). -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -437,6 +452,146 @@ input, textarea, select {
   white-space: nowrap;
 }
 
+/* Top-level accordion sections in the menu: Decks, Add/Edit, Import/Export,
+   Settings. Kept as a distinct class from .collapsible-section (used for
+   the nested "Edit Cards" sub-section) so the two accordions don't interfere
+   with each other's JS or CSS selectors. */
+.menu-section {
+  margin: 14px 0;
+}
+
+.menu-section-header {
+  margin: 0;
+  padding: 14px 16px;
+  background: #333;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  text-align: left;
+  font-size: 17px;
+}
+
+.menu-section-header:hover {
+  background: #444;
+}
+
+.menu-section-header::after {
+  content: "▾";
+  font-size: 1.1em;
+  margin-left: 8px;
+  transition: transform 0.25s ease;
+  flex-shrink: 0;
+}
+
+.menu-section.open .menu-section-header::after {
+  transform: rotate(180deg);
+}
+
+.menu-section-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease-out, padding 0.3s ease-out;
+  padding: 0 16px;
+  background: #222;
+  border-radius: 0 0 8px 8px;
+  text-align: left;
+}
+
+.menu-section.open .menu-section-content {
+  max-height: 3000px;   /* generous ceiling so long card lists never clip */
+  padding: 16px;
+}
+
+.menu-section-content h4 {
+  margin: 16px 0 6px;
+  color: #ccc;
+  font-size: 15px;
+}
+
+.menu-section-content h4:first-child {
+  margin-top: 0;
+}
+
+.deck-context-label {
+  font-size: 14px;
+  color: #999;
+  text-align: left;
+  margin: 0 0 8px;
+  word-break: break-word;
+}
+
+.deck-context-label strong {
+  color: #8bc34a;
+}
+
+/* Delete Deck confirmation flow: a two-step modal (pick deck, then confirm
+   by name) so a long deck name always has room to wrap instead of being
+   clipped the way it could be in a native confirm()/prompt() dialog. */
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 5000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.modal-overlay.open {
+  display: flex;
+}
+
+.modal-box {
+  background: #222;
+  border-radius: 14px;
+  padding: 22px;
+  width: 100%;
+  max-width: 420px;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.modal-box h3 {
+  margin: 0 0 12px;
+}
+
+.modal-box p {
+  margin: 0 0 10px;
+  color: #ccc;
+}
+
+.deck-name-display {
+  font-size: 18px;
+  font-weight: bold;
+  color: #8bc34a;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  background: #111;
+  padding: 12px 14px;
+  border-radius: 8px;
+  margin: 4px 0 16px;
+}
+
+.modal-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.modal-buttons button {
+  flex: 1;
+  width: auto;
+  max-width: none;
+  padding: 12px;
+}
+
 </style>
 </head>
 <body>
@@ -445,74 +600,121 @@ input, textarea, select {
 <div class="sidebar" id="sidebar">
   <button class="closeBtn" onclick="toggleMenu()" aria-label="Close menu">×</button>
 
-  <h3>Decks</h3>
-  <div id="deckList"></div>
+  <h2 style="text-align:left; margin:0 0 12px;">Menu</h2>
 
-  <button onclick="markDone()">Mark Done ✔</button>
-  <button onclick="restartDeck()">Restart Deck</button>
-  <button onclick="toggleMode()">Toggle Shuffle</button>
-  <button onclick="toggleInputMode()">User Input Mode: <span id="inputModeStatus">OFF</span></button>
-  <button onclick="addDeck()">Add Deck</button>
-  <button onclick="deleteDeck()">Delete Deck</button>
+  <!-- DECKS: expanded by default on initial load -->
+  <div class="menu-section open" id="sectionDecks">
+    <h3 class="menu-section-header" onclick="toggleMenuSection('sectionDecks')">Decks</h3>
+    <div class="menu-section-content">
+      <div id="deckList"></div>
 
-  <hr>
+      <button onclick="markDone()">Mark Done ✔</button>
+      <button onclick="restartDeck()">Restart Deck</button>
+      <button onclick="toggleMode()">Toggle Shuffle</button>
+    </div>
+  </div>
 
-  <h3>Import CSV</h3>
-  <input type="file" id="csvFile" accept=".csv" multiple>
-  <button onclick="importCSV()">Import</button>
- 
-  <h3>Export Decks</h3>
-  <button onclick="exportCurrentDeck()">Export Current Deck</button>
-  <button onclick="exportAllDecks()">Export All Decks (Backup)</button>
+  <!-- ADD/EDIT: collapsed by default -->
+  <div class="menu-section" id="sectionAddEdit">
+    <h3 class="menu-section-header" onclick="toggleMenuSection('sectionAddEdit')">Add/Edit</h3>
+    <div class="menu-section-content">
+      <button onclick="addDeck()">Add Deck</button>
+      <button onclick="deleteDeck()">Delete Deck</button>
 
-  <p style="font-size:14px; color:#888; margin-top:8px; text-align:left;">
-  Tip: After tapping Export, choose "Save to Files" → "iCloud Drive" to back up and sync your decks across devices.
-  </p>
+      <h4>Add Card</h4>
+      <p class="deck-context-label">Adding to: <strong id="addCardDeckName">–</strong></p>
+      <textarea id="newQ" placeholder="Question"></textarea>
+      <textarea id="newA" placeholder="Answer"></textarea>
+      <input type="file" id="newImg" accept="image/*">
+      <button onclick="addCard()">Add Card</button>
 
-  <h3>Restore from Backup</h3>
-  <input type="file" id="restoreFile" accept=".json,.csv" multiple>
-  <button onclick="restoreFromBackup()">Restore from File</button>
+      <div class="collapsible-section">
+        <h3 class="collapsible-header" onclick="toggleEditSection()">Edit Cards ▾</h3>
 
-  <p style="font-size:13px; color:#777; margin-top:8px;">
-  Upload a .json backup or .csv files.<br>
-  Warning: This will overwrite existing decks with the same name.
-  </p>
+        <div class="collapsible-content" id="editSection">
+          <p class="deck-context-label">Editing: <strong id="editCardsDeckName">–</strong></p>
+          <div id="cardList"></div>
+          <div id="editor" style="display:none;">
+            <textarea id="editQ" placeholder="Question"></textarea>
+            <textarea id="editA" placeholder="Answer"></textarea>
+            <input type="file" id="editImg" accept="image/*">
 
-  <hr>
-
-  <h3>Add Card</h3>
-  <textarea id="newQ" placeholder="Question"></textarea>
-  <textarea id="newA" placeholder="Answer"></textarea>
-  <input type="file" id="newImg" accept="image/*">
-  <button onclick="addCard()">Add Card</button>
-
-  <hr>
-
-  <div class="collapsible-section">
-    <h3 class="collapsible-header" onclick="toggleEditSection()">Edit Cards ▾</h3>
-  
-    <div class="collapsible-content" id="editSection">
-      <div id="cardList"></div>
-      <div id="editor" style="display:none;">
-        <textarea id="editQ" placeholder="Question"></textarea>
-        <textarea id="editA" placeholder="Answer"></textarea>
-        <input type="file" id="editImg" accept="image/*">
-      
-        <div class="editor-buttons">
-          <button onclick="saveEdit()">Save</button>
-          <button onclick="cancelEdit()">Cancel</button>
-          <button onclick="deleteCard()">Delete</button>
+            <div class="editor-buttons">
+              <button onclick="saveEdit()">Save</button>
+              <button onclick="cancelEdit()">Cancel</button>
+              <button onclick="deleteCard()">Delete</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <hr>
+  <!-- IMPORT/EXPORT: collapsed by default -->
+  <div class="menu-section" id="sectionImportExport">
+    <h3 class="menu-section-header" onclick="toggleMenuSection('sectionImportExport')">Import/Export</h3>
+    <div class="menu-section-content">
+      <h4>Import CSV</h4>
+      <input type="file" id="csvFile" accept=".csv" multiple>
+      <button onclick="importCSV()">Import</button>
 
-  <h3>App Info</h3>
-  <p id="appVersionLabel" style="color:#aaa; font-size:14px; margin:8px 0; text-align:left;">Version</p>
-  <button id="checkUpdateBtn" onclick="checkForUpdate()">Check for Update</button>
+      <h4>Export Decks</h4>
+      <button onclick="exportCurrentDeck()">Export Current Deck</button>
+      <button onclick="exportAllDecks()">Export All Decks (Backup)</button>
 
+      <p style="font-size:14px; color:#888; margin-top:8px;">
+      Tip: After tapping Export, choose "Save to Files" → "iCloud Drive" to back up and sync your decks across devices.
+      </p>
+
+      <h4>Restore from Backup</h4>
+      <input type="file" id="restoreFile" accept=".json,.csv" multiple>
+      <button onclick="restoreFromBackup()">Restore from File</button>
+
+      <p style="font-size:13px; color:#777; margin-top:8px;">
+      Upload a .json backup or .csv files.<br>
+      Warning: This will overwrite existing decks with the same name.
+      </p>
+    </div>
+  </div>
+
+  <!-- SETTINGS: collapsed by default -->
+  <div class="menu-section" id="sectionSettings">
+    <h3 class="menu-section-header" onclick="toggleMenuSection('sectionSettings')">Settings</h3>
+    <div class="menu-section-content">
+      <button onclick="toggleInputMode()">User Input Mode: <span id="inputModeStatus">OFF</span></button>
+
+      <h4>App Info</h4>
+      <p id="appVersionLabel" style="color:#aaa; font-size:14px; margin:8px 0;">Version</p>
+      <button id="checkUpdateBtn" onclick="checkForUpdate()">Check for Update</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Delete Deck — step 1: pick which deck (defaults to the current deck) -->
+<div class="modal-overlay" id="deleteDeckPickModal">
+  <div class="modal-box">
+    <h3>Delete Deck</h3>
+    <p>Choose which deck to delete:</p>
+    <select id="deleteDeckSelect"></select>
+    <div class="modal-buttons">
+      <button style="background:#555; color:white;" onclick="closeDeleteDeckPickModal()">Cancel</button>
+      <button style="background:#c62828; color:white;" onclick="proceedToDeleteConfirm()">Next</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Deck — step 2: confirm by full name -->
+<div class="modal-overlay" id="deleteDeckConfirmModal">
+  <div class="modal-box">
+    <h3>Confirm Delete</h3>
+    <p>This will permanently delete this deck and all of its cards:</p>
+    <div class="deck-name-display" id="deleteDeckConfirmName"></div>
+    <div class="modal-buttons">
+      <button style="background:#555; color:white;" onclick="closeDeleteDeckConfirmModal()">Cancel</button>
+      <button style="background:#c62828; color:white;" onclick="confirmDeleteDeck()">Delete</button>
+    </div>
+  </div>
 </div>
 
 <button class="top-icon-btn menuBtn" onclick="toggleMenu()" aria-label="Open menu">☰</button>
@@ -557,7 +759,7 @@ const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 1 minute in milliseconds
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.3";
+const APP_VERSION = "1.4";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -642,6 +844,19 @@ function shuffle(arr) {
 
 function toggleMenu() {
   sidebarEl.classList.toggle("open");
+}
+
+// Accordion behavior for the four top-level menu sections (Decks, Add/Edit,
+// Import/Export, Settings): expanding one auto-collapses the others.
+// Clicking an already-open section's header just collapses it.
+function toggleMenuSection(sectionId) {
+  document.querySelectorAll(".menu-section").forEach(section => {
+    if (section.id === sectionId) {
+      section.classList.toggle("open");
+    } else {
+      section.classList.remove("open");
+    }
+  });
 }
 
 function handleBackOrFlip() {
@@ -796,16 +1011,71 @@ function addDeck() {
   renderDecks();
 }
 
-function deleteDeck(){
-  if(!currentDeck) return;
-  if(confirm("Delete deck?")){
-    delete data.decks[currentDeck];
+// Delete Deck lives in the Add/Edit section now, away from the deck list,
+// so it can no longer just assume "the current deck" the way it used to.
+// It opens a two-step modal instead: pick which deck (defaulting to
+// whichever deck is currently selected, if any), then confirm against the
+// full deck name. Both modal steps render the name in a wrapping box
+// (.deck-name-display / <select>'s native picker) so a long name can't get
+// clipped the way it could in a native confirm()/prompt() dialog.
+let deckPendingDelete = null;
+
+function deleteDeck() {
+  const deckNames = Object.keys(data.decks);
+  if (deckNames.length === 0) {
+    alert("There are no decks to delete.");
+    return;
+  }
+
+  const select = document.getElementById("deleteDeckSelect");
+  select.innerHTML = "";
+  deckNames.forEach(name => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+
+  // Default to the currently selected deck, if there is one.
+  if (currentDeck && data.decks[currentDeck]) {
+    select.value = currentDeck;
+  }
+
+  document.getElementById("deleteDeckPickModal").classList.add("open");
+}
+
+function closeDeleteDeckPickModal() {
+  document.getElementById("deleteDeckPickModal").classList.remove("open");
+}
+
+function proceedToDeleteConfirm() {
+  const select = document.getElementById("deleteDeckSelect");
+  deckPendingDelete = select.value;
+
+  closeDeleteDeckPickModal();
+
+  document.getElementById("deleteDeckConfirmName").textContent = deckPendingDelete;
+  document.getElementById("deleteDeckConfirmModal").classList.add("open");
+}
+
+function closeDeleteDeckConfirmModal() {
+  deckPendingDelete = null;
+  document.getElementById("deleteDeckConfirmModal").classList.remove("open");
+}
+
+function confirmDeleteDeck() {
+  if (!deckPendingDelete || !data.decks[deckPendingDelete]) {
+    closeDeleteDeckConfirmModal();
+    return;
+  }
+
+  const wasCurrentDeck = deckPendingDelete === currentDeck;
+  delete data.decks[deckPendingDelete];
+
+  if (wasCurrentDeck) {
     currentDeck = null;
     sessionQueue = [];
     sessionIndex = 0;
-
-    save();
-    renderDecks();
 
     cardEl.innerText = 'Tap “Show Question” to begin';
     showBtn.innerText = "Show Question";
@@ -816,7 +1086,15 @@ function deleteDeck(){
     markDoneBtn.style.display = "none";
     updateBackButton();
     updateCardCounter();
+    updateContextLabels();
   }
+
+  save();
+  renderDecks();
+  renderCardList();
+
+  document.getElementById("deleteDeckConfirmModal").classList.remove("open");
+  deckPendingDelete = null;
 }
 
 // Shared by both the sidebar "Mark Done" button and the bottom-bar one —
@@ -874,6 +1152,17 @@ function restartDeck(){
   startSession();
 }
 
+// Keeps the "Adding to: X" / "Editing: X" labels above the Add Card and
+// Edit Cards forms in sync with currentDeck, now that those controls live
+// in the Add/Edit section instead of right next to the deck list.
+function updateContextLabels() {
+  const label = currentDeck || "No deck selected";
+  const addLabel = document.getElementById("addCardDeckName");
+  const editLabel = document.getElementById("editCardsDeckName");
+  if (addLabel) addLabel.textContent = label;
+  if (editLabel) editLabel.textContent = label;
+}
+
 function startSession() {
   const deck = data.decks[currentDeck];
   if (!deck || !Array.isArray(deck.cards)) {
@@ -881,6 +1170,8 @@ function startSession() {
     alert("This deck's data looks invalid and can't be studied. Try re-importing it or removing it.");
     return;
   }
+
+  updateContextLabels();
 
   // Build a session-local study queue. Shuffle mode shuffles ONCE up front
   // (a real Fisher–Yates shuffle) so every card is guaranteed to appear
@@ -1467,6 +1758,8 @@ renderDecks();
 if (!currentDeck && Object.keys(data.decks).length > 0) {
   currentDeck = Object.keys(data.decks)[0];  // auto-select first deck
   startSession();
+} else {
+  updateContextLabels();
 }
 
 function initVersionDisplay() {
