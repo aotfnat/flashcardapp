@@ -1,18 +1,23 @@
 //service-worker.js Flashcard app
-//Version 1.4
+//Version 1.5
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     menu overhaul (four collapsible sections, new Delete Deck confirmation
-//     modal) propagates to existing installs via the in-app "Check for
-//     Update" button. registration.update() only detects a new worker when
-//     this file's bytes actually change, so without this bump, already-
-//     installed users would never receive the update through auto-update —
-//     only fresh installs would get it.
-//     Prior history: Version 1.3, SOC: Bumped CACHE version only (no logic
-//     changes here) so that the index.html menu-not-opening CSS fix
+//     menu polish (hamburger hides while open, floating close button, button
+//     spacing fix, single Edit Cards arrow, numbered card list) and new
+//     Light/Dark mode toggle propagate to existing installs via the in-app
+//     "Check for Update" button. registration.update() only detects a new
+//     worker when this file's bytes actually change, so without this bump,
+//     already-installed users would never receive the update through
+//     auto-update — only fresh installs would get it.
+//     Prior history: Version 1.4, SOC: Bumped CACHE version only (no logic
+//     changes here) so that index.html's menu overhaul (four collapsible
+//     sections, new Delete Deck confirmation modal) propagates to existing
+//     installs via the in-app "Check for Update" button.
+//     Earlier history: Version 1.3, SOC: Bumped CACHE version only (no
+//     logic changes here) so that the index.html menu-not-opening CSS fix
 //     propagates to existing installs via the in-app "Check for Update"
 //     button.
 
-const CACHE = "study-cards-v1.4";
+const CACHE = "study-cards-v1.5";
 
 const CORE_ASSETS = [
   "./",

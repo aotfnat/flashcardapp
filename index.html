@@ -1,20 +1,39 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.4, SOC: Reorganized the menu into four collapsible sections
-     (Decks, Add/Edit, Import/Export, Settings) using an accordion pattern —
-     opening one section auto-collapses the others, and Decks starts expanded
-     on load while the rest start collapsed. Moved Mark Done/Restart/Shuffle
-     into Decks; Add Deck/Delete Deck/Add Card/Edit Cards into Add/Edit;
-     Import CSV/Export/Restore into Import/Export; User Input Mode/App Info
-     into Settings. Delete Deck no longer assumes "the current deck" (it's
-     not shown next to the deck list anymore) — it now opens a two-step
-     modal: pick the deck from a dropdown (defaulting to the currently
-     selected deck), then confirm against the full deck name rendered with
-     word-wrapping so long names can't get clipped like they could with a
-     plain confirm()/prompt() dialog. Added small "Adding to:" / "Editing:"
-     labels above the Add Card and Edit Cards forms so the target deck is
-     always visible, since those controls are no longer next to the deck
-     list.
-     Prior history: Version 1.3, SOC: Fixed a bug where tapping the
+<!-- Version 1.5, SOC: (1) The hamburger button now hides while the menu is
+     open (.sidebar.open ~ .menuBtn), and the × close button was pulled out
+     of .sidebar and turned into its own floating .closeMenuBtn sibling —
+     nesting a position:fixed close button inside .sidebar meant it scrolled
+     away with the accordion content, since .sidebar's own `transform`
+     turns it into the containing block for fixed descendants; as a
+     sibling it now stays reliably on-screen and visible the whole time the
+     menu is open. (2) Added a `.menu-section-content button + button` rule
+     so adjacent buttons (Mark Done/Restart/Shuffle, Add Deck/Delete Deck,
+     Export Current/Export All) get a small gap instead of sitting flush
+     against each other, which looked like overlap on narrower phones.
+     (3) Removed the leftover literal "▾" from the Edit Cards header text —
+     the CSS ::after already draws one, so there were two arrows. (4) Cards
+     under Edit Cards are now numbered ("1. ", "2. ", ...) to make a
+     specific card easier to find. (5) Added a Light/Dark mode toggle under
+     Settings, backed by CSS custom properties (--bg, --text, --sidebar-bg,
+     etc.) that swap via a `.light-mode` class on <body>; the choice
+     persists in localStorage and is re-applied by a tiny inline script at
+     the very top of <body> so there's no flash of the wrong theme on load.
+     Prior history: Version 1.4, SOC: Reorganized the menu into four
+     collapsible sections (Decks, Add/Edit, Import/Export, Settings) using
+     an accordion pattern — opening one section auto-collapses the others,
+     and Decks starts expanded on load while the rest start collapsed.
+     Moved Mark Done/Restart/Shuffle into Decks; Add Deck/Delete Deck/Add
+     Card/Edit Cards into Add/Edit; Import CSV/Export/Restore into
+     Import/Export; User Input Mode/App Info into Settings. Delete Deck no
+     longer assumes "the current deck" (it's not shown next to the deck
+     list anymore) — it now opens a two-step modal: pick the deck from a
+     dropdown (defaulting to the currently selected deck), then confirm
+     against the full deck name rendered with word-wrapping so long names
+     can't get clipped like they could with a plain confirm()/prompt()
+     dialog. Added small "Adding to:" / "Editing:" labels above the Add
+     Card and Edit Cards forms so the target deck is always visible, since
+     those controls are no longer next to the deck list.
+     Earlier history: Version 1.3, SOC: Fixed a bug where tapping the
      hamburger menu button appeared to do nothing. .sidebar was hidden using
      BOTH a static "left:-260px" offset AND "transform:translateX(-100%)"
      stacked on top of each other. Toggling the .open class only cleared the
@@ -31,11 +50,49 @@
 <link rel="manifest" href="manifest.json">
 
 <style>
+:root {
+  --bg: #111111;
+  --text: #ffffff;
+  --muted-text: #aaaaaa;
+  --border-color: #333333;
+  --sidebar-bg: #222222;
+  --section-bg: #333333;
+  --section-bg-hover: #444444;
+  --content-bg: #222222;
+  --icon-color: #ffffff;
+  --icon-hover-bg: rgba(255, 255, 255, 0.15);
+  --deck-hover-bg: #333333;
+  --deck-active-bg: #444444;
+  --modal-box-bg: #222222;
+  --modal-name-bg: #111111;
+  --answer-bg: #222222;
+  --answer-border: #555555;
+}
+
+body.light-mode {
+  --bg: #f4f4f4;
+  --text: #1a1a1a;
+  --muted-text: #666666;
+  --border-color: #dddddd;
+  --sidebar-bg: #ffffff;
+  --section-bg: #e6e6e6;
+  --section-bg-hover: #d8d8d8;
+  --content-bg: #f0f0f0;
+  --icon-color: #1a1a1a;
+  --icon-hover-bg: rgba(0, 0, 0, 0.08);
+  --deck-hover-bg: #ececec;
+  --deck-active-bg: #e0e0e0;
+  --modal-box-bg: #ffffff;
+  --modal-name-bg: #f0f0f0;
+  --answer-bg: #ffffff;
+  --answer-border: #cccccc;
+}
+
 body {
   margin:0;
   font-family:-apple-system,BlinkMacSystemFont,sans-serif;
-  background:#111;
-  color:white;
+  background:var(--bg);
+  color:var(--text);
   text-align:center;
   overflow-x:hidden;
 }
@@ -46,8 +103,8 @@ body {
   left: 0;
   right: 0;
   padding: 16px 20px;
-  background: #111;
-  border-top: 1px solid #333;
+  background: var(--bg);
+  border-top: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -97,7 +154,7 @@ button {
   text-align: center;
 
   background: none;
-  color: white;
+  color: var(--icon-color);
   border: none;
   border-radius: 50%;
   padding: 0;
@@ -113,7 +170,7 @@ button {
 
 #backFlipBtn:hover,
 #backFlipBtn:active {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--icon-hover-bg);
   transform: scale(1.08);
 }
 
@@ -195,7 +252,7 @@ img {
   line-height: 44px;
   text-align: center;
   background: none;
-  color: white;
+  color: var(--icon-color);
   border: none;
   border-radius: 50%;
   padding: 0;
@@ -206,13 +263,19 @@ img {
 
 .top-icon-btn:hover,
 .top-icon-btn:active {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--icon-hover-bg);
   transform: scale(1.08);
 }
 
 .menuBtn {
   left: calc(16px + env(safe-area-inset-left));
   z-index: 2000;
+}
+
+/* Hide the hamburger while the menu is open — its own close (×) button,
+   which floats independently of the sidebar's scroll position, takes over. */
+.sidebar.open ~ .menuBtn {
+  display: none;
 }
 
 /* Hide back button with sidebar */
@@ -230,7 +293,7 @@ img {
 
   font-size: 18px;
   font-weight: 600;
-  color: #aaa;
+  color: var(--muted-text);
   background: rgba(0,0,0,0.4);
   padding: 6px 12px;
   border-radius: 20px;
@@ -249,26 +312,23 @@ img {
 }
 
 
-.closeBtn {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  background: none;
-  border: none;
-  color: #ccc;
-  font-size: 36px;
-  width: 44px;         
-  height: 44px;
-  line-height: 44px;    /* vertically centers the × inside the button */
-  text-align: center;   /* horizontally centers the × inside the button */
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
-  z-index: 10;
+/* Floating "×" close button for the menu. Kept OUT of .sidebar in the DOM
+   (as a later sibling) rather than nested inside it: .sidebar always has a
+   `transform` applied (even translateX(0) when open), and any transformed
+   ancestor becomes the containing block for position:fixed descendants —
+   which would make a nested fixed close button scroll away with the
+   sidebar's content instead of staying put. As a sibling, it's genuinely
+   fixed to the viewport and shown/hidden purely via the .sidebar.open
+   sibling selector, matching the pattern already used for #backFlipBtn. */
+.closeMenuBtn {
+  left: calc(204px + env(safe-area-inset-left));
+  z-index: 2001;
+  font-size: 32px;
+  display: none;
 }
 
-.closeBtn:hover {
-  color: white;
+.sidebar.open ~ .closeMenuBtn {
+  display: block;
 }
 
 .sidebar {
@@ -277,7 +337,7 @@ img {
   left:0;
   width:260px;
   height:100%;
-  background:#222;
+  background:var(--sidebar-bg);
   transform:translateX(-100%);
   transition:transform .3s ease;
   padding:20px;
@@ -305,11 +365,11 @@ input, textarea, select {
 }
 
 .deckItem:hover {
-  background: #333;
+  background: var(--deck-hover-bg);
 }
 
 .deckItem.active {
-  background: #444;
+  background: var(--deck-active-bg);
   color: #8bc34a;           /* light green for success/active feel */
   font-weight: bold;
   border-left: 4px solid #8bc34a;
@@ -337,7 +397,7 @@ input, textarea, select {
 .collapsible-header {
   margin: 0;
   padding: 12px 16px;
-  background: #333;
+  background: var(--section-bg);
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
@@ -348,7 +408,7 @@ input, textarea, select {
 }
 
 .collapsible-header:hover {
-  background: #444;
+  background: var(--section-bg-hover);
 }
 
 .collapsible-header::after {
@@ -366,7 +426,7 @@ input, textarea, select {
   overflow: hidden;
   transition: max-height 0.3s ease-out, padding 0.3s ease-out;
   padding: 0 16px;
-  background: #222;
+  background: var(--content-bg);
   border-radius: 0 0 8px 8px;
 }
 
@@ -421,9 +481,9 @@ input, textarea, select {
   font-size: 20px;
   line-height: 1.5;
   min-height: 160px;
-  background: #222;
-  color: white;
-  border: 2px solid #555;
+  background: var(--answer-bg);
+  color: var(--text);
+  border: 2px solid var(--answer-border);
   border-radius: 12px;
   resize: vertical;
   box-sizing: border-box;
@@ -463,7 +523,7 @@ input, textarea, select {
 .menu-section-header {
   margin: 0;
   padding: 14px 16px;
-  background: #333;
+  background: var(--section-bg);
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
@@ -476,7 +536,7 @@ input, textarea, select {
 }
 
 .menu-section-header:hover {
-  background: #444;
+  background: var(--section-bg-hover);
 }
 
 .menu-section-header::after {
@@ -496,7 +556,7 @@ input, textarea, select {
   overflow: hidden;
   transition: max-height 0.3s ease-out, padding 0.3s ease-out;
   padding: 0 16px;
-  background: #222;
+  background: var(--content-bg);
   border-radius: 0 0 8px 8px;
   text-align: left;
 }
@@ -508,7 +568,7 @@ input, textarea, select {
 
 .menu-section-content h4 {
   margin: 16px 0 6px;
-  color: #ccc;
+  color: var(--muted-text);
   font-size: 15px;
 }
 
@@ -516,9 +576,19 @@ input, textarea, select {
   margin-top: 0;
 }
 
+/* Gives adjacent buttons within a menu section (Mark Done/Restart/Shuffle,
+   Add Deck/Delete Deck, Export Current/Export All, etc.) breathing room —
+   without this they sat flush against each other and looked like they were
+   overlapping on narrower phone screens. Scoped to menu-section-content so
+   it doesn't add extra spacing inside .editor-buttons, which already has
+   its own flex gap. */
+.menu-section-content button + button {
+  margin-top: 10px;
+}
+
 .deck-context-label {
   font-size: 14px;
-  color: #999;
+  color: var(--muted-text);
   text-align: left;
   margin: 0 0 8px;
   word-break: break-word;
@@ -548,7 +618,7 @@ input, textarea, select {
 }
 
 .modal-box {
-  background: #222;
+  background: var(--modal-box-bg);
   border-radius: 14px;
   padding: 22px;
   width: 100%;
@@ -563,7 +633,7 @@ input, textarea, select {
 
 .modal-box p {
   margin: 0 0 10px;
-  color: #ccc;
+  color: var(--muted-text);
 }
 
 .deck-name-display {
@@ -573,7 +643,7 @@ input, textarea, select {
   word-break: break-word;
   overflow-wrap: anywhere;
   white-space: normal;
-  background: #111;
+  background: var(--modal-name-bg);
   padding: 12px 14px;
   border-radius: 8px;
   margin: 4px 0 16px;
@@ -595,11 +665,21 @@ input, textarea, select {
 </style>
 </head>
 <body>
+<script>
+// Applied immediately (before the sidebar/card markup even renders) so a
+// saved "light" preference doesn't flash dark for a moment on load. The
+// main script below re-reads this class rather than re-deciding the theme.
+(function() {
+  try {
+    if (localStorage.getItem('flashcardsTheme') === 'light') {
+      document.body.classList.add('light-mode');
+    }
+  } catch (e) { /* localStorage unavailable — default to dark */ }
+})();
+</script>
 
 
 <div class="sidebar" id="sidebar">
-  <button class="closeBtn" onclick="toggleMenu()" aria-label="Close menu">×</button>
-
   <h2 style="text-align:left; margin:0 0 12px;">Menu</h2>
 
   <!-- DECKS: expanded by default on initial load -->
@@ -629,7 +709,7 @@ input, textarea, select {
       <button onclick="addCard()">Add Card</button>
 
       <div class="collapsible-section">
-        <h3 class="collapsible-header" onclick="toggleEditSection()">Edit Cards ▾</h3>
+        <h3 class="collapsible-header" onclick="toggleEditSection()">Edit Cards</h3>
 
         <div class="collapsible-content" id="editSection">
           <p class="deck-context-label">Editing: <strong id="editCardsDeckName">–</strong></p>
@@ -682,6 +762,7 @@ input, textarea, select {
     <h3 class="menu-section-header" onclick="toggleMenuSection('sectionSettings')">Settings</h3>
     <div class="menu-section-content">
       <button onclick="toggleInputMode()">User Input Mode: <span id="inputModeStatus">OFF</span></button>
+      <button onclick="toggleTheme()">Theme: <span id="themeModeStatus">Dark</span></button>
 
       <h4>App Info</h4>
       <p id="appVersionLabel" style="color:#aaa; font-size:14px; margin:8px 0;">Version</p>
@@ -690,6 +771,8 @@ input, textarea, select {
   </div>
 
 </div>
+
+<button class="top-icon-btn closeMenuBtn" onclick="toggleMenu()" aria-label="Close menu">×</button>
 
 <!-- Delete Deck — step 1: pick which deck (defaults to the current deck) -->
 <div class="modal-overlay" id="deleteDeckPickModal">
@@ -759,7 +842,7 @@ const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 1 minute in milliseconds
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.4";
+const APP_VERSION = "1.5";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -977,12 +1060,12 @@ function renderCardList() {
     item.style.overflow = "hidden";
     item.style.textOverflow = "ellipsis";
 
-    // Show first 40 chars of question + image indicator
+    // Show a 1-based card number, then first 40 chars of question + image indicator
     let preview = card.q.substring(0, 40);
     if (card.q.length > 40) preview += "...";
     if (card.img) preview += " [img]";
 
-    item.textContent = preview || "(empty question)";
+    item.textContent = `${index + 1}. ${preview || "(empty question)"}`;
 
     item.onclick = () => {
       editingIndex = index;
@@ -1146,6 +1229,26 @@ function toggleInputMode() {
   }
 
   alert("User Input Mode " + (userInputMode ? "ENABLED" : "DISABLED"));
+}
+
+// Light/Dark mode. The actual class was already applied (if needed) by the
+// tiny inline script at the top of <body>, before any content rendered —
+// this just reads that state back into a variable and keeps the Settings
+// label in sync, so toggling only ever has to flip one class.
+let lightMode = document.body.classList.contains("light-mode");
+
+function applyTheme() {
+  document.body.classList.toggle("light-mode", lightMode);
+  const status = document.getElementById("themeModeStatus");
+  if (status) status.textContent = lightMode ? "Light" : "Dark";
+}
+
+function toggleTheme() {
+  lightMode = !lightMode;
+  try {
+    localStorage.setItem("flashcardsTheme", lightMode ? "light" : "dark");
+  } catch (e) { /* best effort — theme just won't persist */ }
+  applyTheme();
 }
 
 function restartDeck(){
@@ -1767,6 +1870,7 @@ function initVersionDisplay() {
   if (label) label.textContent = "Version " + APP_VERSION;
 }
 initVersionDisplay();
+applyTheme();
 
 // Lets the user pull a new version from inside the app instead of having to
 // delete and reinstall it. service-worker.js's own SW already self-activates
