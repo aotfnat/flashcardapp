@@ -1,5 +1,5 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.6, SOC: (1) User Input Mode is now a 3-way cycle (Off → Text →
+<!-- Version 1.7, SOC: (1) User Input Mode is now a 3-way cycle (Off → Text →
      Draw → Off) instead of a boolean. The new "Draw" option shows a
      freestyle drawing/writing canvas on the question card instead of the
      text box, built as two stacked <canvas> elements — a background one
@@ -23,7 +23,21 @@
      the card counter (top-right, e.g. "3 / 12") now opens a small "Go to
      Card" modal where the learner can type a card number and jump straight
      to that position in the current study pass, reusing the existing
-     modal-overlay pattern already used for Delete Deck.
+     modal-overlay pattern already used for Delete Deck. (5) Study
+     position now survives the app being backgrounded/suspended (or the
+     page being killed and reloaded by the OS): sessionQueue/repeatQueue
+     are stored as indices into deck.cards (not card copies) and are
+     persisted, along with sessionIndex, showingAnswer, firstShow, and the
+     current deck + User Input Mode, to a separate "studyData_session" key
+     on every state-changing action and on visibilitychange/pagehide. On
+     load (or when switching back to a deck that wasn't finished), that
+     saved state is validated and restored instead of restarting the deck,
+     so an in-progress repeat queue is preserved until it's actually
+     cleared. Explicit resets (Restart Deck, changing User Input Mode,
+     deleting the active card) still force a fresh session. (6) The card
+     counter now parenthetically shows the card's actual position in the
+     deck (e.g. "3 / 12 (7)") whenever Shuffle is on, so a card can still
+     be found in Edit Cards without having to un-shuffle first.
       -->
 <!DOCTYPE html>
 <html>
@@ -926,10 +940,14 @@ input, textarea, select {
 let data = loadData();
 let currentDeck = null;
 
-// Session-only study state. Never persisted, and never written back onto
-// deck.cards — this is what used to happen (deck.cards got replaced by the
-// in-progress repeat queue), which could silently corrupt the saved deck if
-// any other action triggered a save() mid-session.
+// Session-only-in-the-sense-of-"not deck.cards" study state. sessionQueue and
+// repeatQueue hold INDICES into the current deck's cards array (never the
+// card objects themselves, and never written back onto deck.cards — that's
+// what used to happen, and could silently corrupt the saved deck if any
+// other action triggered a save() mid-session). Storing indices instead of
+// objects is also what makes this state cheap to persist to
+// "studyData_session" (see saveSession()) so a study pass survives the app
+// being backgrounded/killed and reloaded by the OS.
 let sessionQueue = [];
 let sessionIndex = 0;
 let repeatQueue = [];
@@ -944,7 +962,7 @@ const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 1 minute in milliseconds
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.6";
+const APP_VERSION = "1.7";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -1012,6 +1030,71 @@ function save(){
     }
     return false;
   }
+}
+
+// ---------------------------------------------------------------------
+// Session persistence — remembers, per deck, exactly where the learner
+// left off (which pass they're on, which card, whether the answer is
+// showing, and any still-unresolved repeat queue) plus the current deck
+// and User Input Mode. Stored separately from "studyData" (the decks
+// themselves) under its own key so that navigating cards doesn't
+// repeatedly rewrite the full deck list (which can include large image
+// data URLs). Written on every state-changing study action and flushed
+// on visibilitychange/pagehide so it survives the OS suspending or
+// killing the page while it's in the background.
+// ---------------------------------------------------------------------
+const SESSION_KEY = "studyData_session";
+
+function loadSessionState() {
+  const empty = { currentDeck: null, userInputMode: "off", decks: {} };
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return empty;
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") throw new Error("Unexpected session shape");
+
+    if (typeof parsed.currentDeck !== "string") parsed.currentDeck = null;
+    if (!["off", "text", "draw"].includes(parsed.userInputMode)) parsed.userInputMode = "off";
+    if (!parsed.decks || typeof parsed.decks !== "object") parsed.decks = {};
+
+    return parsed;
+  } catch (err) {
+    console.warn("Saved session state was corrupted and has been reset:", err);
+    return empty;
+  }
+}
+
+let sessionState = loadSessionState();
+
+function saveSession() {
+  try {
+    sessionState.currentDeck = currentDeck;
+    sessionState.userInputMode = userInputMode;
+
+    if (currentDeck) {
+      sessionState.decks[currentDeck] = {
+        queue: sessionQueue.slice(),
+        repeat: repeatQueue.slice(),
+        index: sessionIndex,
+        showingAnswer: showingAnswer,
+        firstShow: firstShow
+      };
+    }
+
+    localStorage.setItem(SESSION_KEY, JSON.stringify(sessionState));
+  } catch (err) {
+    // Best effort — losing the resume point isn't worth interrupting study
+    // with an alert, unlike losing actual deck data in save().
+    console.warn("Could not save session state:", err);
+  }
+}
+
+// Removes any saved resume point for a deck (e.g. after it's deleted, or
+// after an explicit reset makes the old indices meaningless).
+function clearSessionFor(deckName) {
+  delete sessionState.decks[deckName];
+  if (sessionState.currentDeck === deckName) sessionState.currentDeck = null;
 }
 
 function nl2br(str) {
@@ -1095,10 +1178,21 @@ function updateCardCounter() {
     return;
   }
 
+  const deck = data.decks[currentDeck];
   const total = sessionQueue.length;
   const current = total > 0 ? sessionIndex + 1 : 0;  // 1-based for user-friendliness
 
-  counterEl.textContent = `${current} / ${total}`;
+  let text = `${current} / ${total}`;
+
+  // In Shuffle mode the pass order no longer matches deck.cards order, so
+  // also show the card's real (unshuffled) position — that's the number
+  // to use in Edit Cards if it needs fixing.
+  if (deck.mode === "shuffle" && total > 0 && sessionIndex < sessionQueue.length) {
+    const actualPosition = sessionQueue[sessionIndex] + 1; // 1-based
+    text += ` (${actualPosition})`;
+  }
+
+  counterEl.textContent = text;
   counterEl.style.opacity = "1";
 }
 
@@ -1120,9 +1214,10 @@ function renderDecks() {
     div.textContent = `${name} (${cardCount})`;
 
     div.onclick = () => {
+      if (currentDeck && currentDeck !== name) saveSession(); // flush outgoing deck's position first
       currentDeck = name;
 
-      startSession();
+      startSession(true); // resume this deck's saved position/repeat queue, if any
 
       const timeSinceLastSelection = Date.now() - lastDeckSelectionTime;
 
@@ -1261,6 +1356,7 @@ function confirmDeleteDeck() {
 
   const wasCurrentDeck = deckPendingDelete === currentDeck;
   delete data.decks[deckPendingDelete];
+  clearSessionFor(deckPendingDelete);
 
   if (wasCurrentDeck) {
     currentDeck = null;
@@ -1277,6 +1373,7 @@ function confirmDeleteDeck() {
     updateBackButton();
     updateCardCounter();
     updateContextLabels();
+    saveSession();
   }
 
   save();
@@ -1349,9 +1446,10 @@ function toggleInputMode() {
   document.getElementById("inputModeStatus").textContent = INPUT_MODE_LABELS[userInputMode];
 
   updateDrawingModeClass();
+  saveSession(); // persist the new mode even if no deck is selected yet
 
   if (currentDeck) {
-    startSession();   // restart current deck with new mode
+    startSession(false);   // force a fresh pass in the current deck with the new mode
   }
 }
 
@@ -1384,7 +1482,7 @@ function toggleTheme() {
 }
 
 function restartDeck(){
-  startSession();
+  startSession(false); // explicit reset — ignore/overwrite any saved resume point
 }
 
 // Keeps the "Adding to: X" / "Editing: X" labels above the Add Card and
@@ -1399,7 +1497,30 @@ function updateContextLabels() {
   updateShuffleStatus();
 }
 
-function startSession() {
+// Builds a plain [0, 1, 2, ...] index array for a deck's cards — the
+// starting point for both sequential order and shuffling.
+function makeIndexQueue(length) {
+  return Array.from({ length }, (_, i) => i);
+}
+
+// A saved per-deck resume point is only trusted if every index it contains
+// still falls inside the deck's current card list (edits/re-imports since
+// the save could have shrunk it) and sessionIndex is in-bounds.
+function isValidSavedSession(saved, cardCount) {
+  if (!saved || !Array.isArray(saved.queue) || !Array.isArray(saved.repeat)) return false;
+  const inBounds = i => Number.isInteger(i) && i >= 0 && i < cardCount;
+  if (!saved.queue.every(inBounds) || !saved.repeat.every(inBounds)) return false;
+  if (typeof saved.index !== "number" || saved.index < 0 || saved.index > saved.queue.length) return false;
+  return true;
+}
+
+// resumeIfAvailable=true (the default) restores exactly where the learner
+// left off in this deck — same pass, same card, same showing/hidden answer
+// state, and any cards still waiting in the repeat queue — using the
+// per-deck resume point saved in sessionState. Pass false to force a fresh
+// pass instead (Restart Deck, switching User Input Mode, or after an edit
+// that invalidates card indices).
+function startSession(resumeIfAvailable = true) {
   const deck = data.decks[currentDeck];
   if (!deck || !Array.isArray(deck.cards)) {
     console.error("Cannot start session: deck or deck.cards missing/invalid for", currentDeck);
@@ -1409,34 +1530,77 @@ function startSession() {
 
   updateContextLabels();
 
-  // Build a session-local study queue. Shuffle mode shuffles ONCE up front
-  // (a real Fisher–Yates shuffle) so every card is guaranteed to appear
-  // exactly once per pass — the old code re-randomized on every single card,
-  // which meant some cards could repeat while others never showed at all.
-  sessionQueue = deck.mode === "shuffle" ? shuffle(deck.cards.slice()) : deck.cards.slice();
-  sessionIndex = 0;
-  repeatQueue = [];
-  showingAnswer = false;
-  firstShow = true;
+  const saved = resumeIfAvailable ? sessionState.decks[currentDeck] : null;
 
-  showBtn.innerText = "Show Question";
-  showBtn.onclick = handleShow;
-  showBtn.style.display = "block";
-  correctBtn.style.display = "none";
-  incorrectBtn.style.display = "none";
-  markDoneBtn.style.display = "none";
+  if (saved && isValidSavedSession(saved, deck.cards.length)) {
+    sessionQueue = saved.queue.slice();
+    repeatQueue = saved.repeat.slice();
+    sessionIndex = saved.index;
+    showingAnswer = !!saved.showingAnswer;
+    firstShow = !!saved.firstShow;
+  } else {
+    // Fresh pass. Shuffle mode shuffles ONCE up front (a real Fisher–Yates
+    // shuffle over card indices) so every card is guaranteed to appear
+    // exactly once per pass — re-randomizing on every card would let some
+    // repeat while others never show at all.
+    sessionQueue = deck.mode === "shuffle" ? shuffle(makeIndexQueue(deck.cards.length)) : makeIndexQueue(deck.cards.length);
+    sessionIndex = 0;
+    repeatQueue = [];
+    showingAnswer = false;
+    firstShow = true;
+  }
+
   markDoneBtn.innerText = "Mark Done ✔";
   markDoneBtn.style.opacity = "1";
 
-  cardEl.innerText = 'Tap “Show Question” to begin';
   userAnswerArea.style.display = "none";
   drawBoxContainer.style.display = "none";
   updateDrawingModeClass();
+
+  restoreCardDisplay();
 
   renderDecks();   // ← ensures highlight updates if coming from restart/complete
   renderCardList();
   updateBackButton();
   updateCardCounter();
+  saveSession();
+}
+
+// Puts the UI into whatever state (sessionIndex, showingAnswer, firstShow)
+// currently describes — used both right after a fresh start and after
+// resuming a saved position, so the two paths share one rendering path.
+function restoreCardDisplay() {
+  if (firstShow) {
+    showBtn.innerText = "Show Question";
+    showBtn.onclick = handleShow;
+    showBtn.style.display = "block";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "none";
+    cardEl.innerText = 'Tap “Show Question” to begin';
+    return;
+  }
+
+  if (sessionIndex >= sessionQueue.length) {
+    // Resuming into a pass that had already been fully completed (repeat
+    // queue cleared) when it was last saved.
+    cardEl.innerHTML = '<strong>Deck Complete!</strong><br><br>';
+    showBtn.innerText = "Restart Deck";
+    showBtn.onclick = restartDeck;
+    showBtn.style.display = "block";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "block";
+    return;
+  }
+
+  markDoneBtn.style.display = "none";
+  showBtn.onclick = handleShow;
+  if (showingAnswer) {
+    showAnswer();
+  } else {
+    showQuestion();
+  }
 }
 
 function handleShow(){
@@ -1455,7 +1619,13 @@ function handleShow(){
 }
 
 function showQuestion() {
-  const card = sessionQueue[sessionIndex];
+  const deck = data.decks[currentDeck];
+  const card = deck.cards[sessionQueue[sessionIndex]];
+
+  // Set before rendering (rather than left to callers to set afterward) so
+  // that saveSession() below always persists the correct state, even
+  // though some callers also redundantly set this themselves right after.
+  showingAnswer = false;
 
   let questionHtml = nl2br(card.q);
   cardEl.innerHTML =
@@ -1483,10 +1653,12 @@ function showQuestion() {
   showingAnswer = false;
   updateBackButton();
   updateCardCounter();
+  saveSession();
 }
 
 function showAnswer() {
-  const card = sessionQueue[sessionIndex];
+  const deck = data.decks[currentDeck];
+  const card = deck.cards[sessionQueue[sessionIndex]];
 
   if (userInputMode === "text" || userInputMode === "draw") {
     // The learner's free-text/drawn answer isn't auto-graded — just show
@@ -1499,6 +1671,7 @@ function showAnswer() {
     incorrectBtn.style.display = "block";
     showingAnswer = true;
     updateBackButton();
+    saveSession();
     return;
   }
 
@@ -1513,12 +1686,13 @@ function showAnswer() {
   incorrectBtn.style.display = "block";
   showingAnswer = true;
   updateBackButton();
+  saveSession();
 }
 
 function grade(correct) {
-  const card = sessionQueue[sessionIndex];
+  const cardIndex = sessionQueue[sessionIndex];
   if (!correct) {
-    repeatQueue.push(card); // Add incorrect cards to repeatQueue
+    repeatQueue.push(cardIndex); // Add incorrect cards' indices to repeatQueue
   }
 
   correctBtn.style.display = "none";
@@ -1553,6 +1727,7 @@ function grade(correct) {
       showBtn.style.display = "block";
       markDoneBtn.style.display = "block";
 
+      saveSession();
       return;
     }
   }
@@ -1561,6 +1736,7 @@ function grade(correct) {
   showingAnswer = false;
   updateBackButton();
   updateCardCounter();
+  saveSession();
 }
 
 
@@ -1968,7 +2144,7 @@ function deleteCard() {
   editingIndex = null;
 
   // Restart session to avoid stale index issues
-  startSession();
+  startSession(false);
 
   alert("Card deleted.");
 }
@@ -2123,6 +2299,16 @@ window.addEventListener("resize", () => {
   if (userInputMode === "draw") sizeDrawCanvas();
 });
 
+// Mobile OSes can suspend or fully kill a backgrounded PWA without ever
+// firing a normal page-unload event, so the resume point (current deck,
+// card, repeat queue, showing/hidden answer) is flushed proactively
+// whenever the app is about to leave the foreground, not just after each
+// study action.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") saveSession();
+});
+window.addEventListener("pagehide", saveSession);
+
 // ---------------------------------------------------------------------
 // "Go to Card" — tapping the card counter opens a small modal to jump
 // straight to a card number within the current study pass.
@@ -2169,6 +2355,7 @@ function confirmGoToCard() {
 
   updateBackButton();
   updateCardCounter();
+  saveSession();
   closeGoToCardModal();
 }
 
@@ -2184,9 +2371,20 @@ function showAutoCloseMessage() {
 
 renderDecks();
 
-if (!currentDeck && Object.keys(data.decks).length > 0) {
-  currentDeck = Object.keys(data.decks)[0];  // auto-select first deck
-  startSession();
+// Restore the User Input Mode that was active last time, before any
+// session is started (startSession()/restoreCardDisplay() read it).
+userInputMode = sessionState.userInputMode;
+document.getElementById("inputModeStatus").textContent = INPUT_MODE_LABELS[userInputMode];
+updateDrawingModeClass();
+
+if (sessionState.currentDeck && data.decks[sessionState.currentDeck]) {
+  // Resume exactly where the learner left off, including any deck other
+  // than the first one and any in-progress repeat queue.
+  currentDeck = sessionState.currentDeck;
+  startSession(true);
+} else if (Object.keys(data.decks).length > 0) {
+  currentDeck = Object.keys(data.decks)[0];  // no saved session — auto-select first deck
+  startSession(true);
 } else {
   updateContextLabels();
 }

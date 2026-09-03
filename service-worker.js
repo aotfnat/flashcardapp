@@ -1,16 +1,17 @@
 //service-worker.js Flashcard app
-//Version 1.6
+//Version 1.7
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     new Draw option for User Input Mode (freestyle drawing/writing canvas
-//     with optional ruled lines), live Shuffle status on the Toggle Shuffle
-//     button, and the tap-to-jump "Go to Card" modal on the card counter
-//     propagate to existing installs via the in-app "Check for Update"
-//     button. registration.update() only detects a new worker when this
-//     file's bytes actually change, so without this bump, already-installed
-//     users would never receive the update through auto-update — only fresh
+//     study-session persistence (resuming the same deck/card/repeat-queue
+//     after the app is backgrounded or the page is reloaded, and when
+//     switching back to a deck studied earlier) and the shuffle-mode card
+//     counter now showing the card's real deck position propagate to
+//     existing installs via the in-app "Check for Update" button.
+//     registration.update() only detects a new worker when this file's
+//     bytes actually change, so without this bump, already-installed users
+//     would never receive the update through auto-update — only fresh
 //     installs would get it.
 
-const CACHE = "study-cards-v1.6";
+const CACHE = "study-cards-v1.7";
 
 const CORE_ASSETS = [
   "./",
