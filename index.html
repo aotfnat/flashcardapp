@@ -1,47 +1,30 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.5, SOC: (1) The hamburger button now hides while the menu is
-     open (.sidebar.open ~ .menuBtn), and the × close button was pulled out
-     of .sidebar and turned into its own floating .closeMenuBtn sibling —
-     nesting a position:fixed close button inside .sidebar meant it scrolled
-     away with the accordion content, since .sidebar's own `transform`
-     turns it into the containing block for fixed descendants; as a
-     sibling it now stays reliably on-screen and visible the whole time the
-     menu is open. (2) Added a `.menu-section-content button + button` rule
-     so adjacent buttons (Mark Done/Restart/Shuffle, Add Deck/Delete Deck,
-     Export Current/Export All) get a small gap instead of sitting flush
-     against each other, which looked like overlap on narrower phones.
-     (3) Removed the leftover literal "▾" from the Edit Cards header text —
-     the CSS ::after already draws one, so there were two arrows. (4) Cards
-     under Edit Cards are now numbered ("1. ", "2. ", ...) to make a
-     specific card easier to find. (5) Added a Light/Dark mode toggle under
-     Settings, backed by CSS custom properties (--bg, --text, --sidebar-bg,
-     etc.) that swap via a `.light-mode` class on <body>; the choice
-     persists in localStorage and is re-applied by a tiny inline script at
-     the very top of <body> so there's no flash of the wrong theme on load.
-     Prior history: Version 1.4, SOC: Reorganized the menu into four
-     collapsible sections (Decks, Add/Edit, Import/Export, Settings) using
-     an accordion pattern — opening one section auto-collapses the others,
-     and Decks starts expanded on load while the rest start collapsed.
-     Moved Mark Done/Restart/Shuffle into Decks; Add Deck/Delete Deck/Add
-     Card/Edit Cards into Add/Edit; Import CSV/Export/Restore into
-     Import/Export; User Input Mode/App Info into Settings. Delete Deck no
-     longer assumes "the current deck" (it's not shown next to the deck
-     list anymore) — it now opens a two-step modal: pick the deck from a
-     dropdown (defaulting to the currently selected deck), then confirm
-     against the full deck name rendered with word-wrapping so long names
-     can't get clipped like they could with a plain confirm()/prompt()
-     dialog. Added small "Adding to:" / "Editing:" labels above the Add
-     Card and Edit Cards forms so the target deck is always visible, since
-     those controls are no longer next to the deck list.
-     Earlier history: Version 1.3, SOC: Fixed a bug where tapping the
-     hamburger menu button appeared to do nothing. .sidebar was hidden using
-     BOTH a static "left:-260px" offset AND "transform:translateX(-100%)"
-     stacked on top of each other. Toggling the .open class only cleared the
-     transform, leaving the sidebar still sitting at left:-260px (its right
-     edge exactly at the viewport edge), so it never actually slid into
-     view. Fixed by using "left:0" as the base position and letting
-     transform alone control the hidden/visible state
-     (translateX(-100%) / translateX(0)). -->
+<!-- Version 1.6, SOC: (1) User Input Mode is now a 3-way cycle (Off → Text →
+     Draw → Off) instead of a boolean. The new "Draw" option shows a
+     freestyle drawing/writing canvas on the question card instead of the
+     text box, built as two stacked <canvas> elements — a background one
+     that renders optional ruled (horizontal) lines and a transparent one on
+     top that captures the actual pen/finger/mouse strokes via Pointer
+     Events. Kept as two canvases specifically so toggling "Ruled Lines"
+     on/off only repaints the background layer and never touches (or
+     erases) whatever the learner has already drawn. Each new question
+     starts with a fresh, blank canvas (consistent with how the existing
+     text-input box already clears itself per question) rather than
+     persisting drawings across cards, since a card's canvas is only
+     meaningful for that specific question. (2) While Draw mode is active,
+     a new `body.drawing-mode` CSS class shrinks #card's margins/min-height
+     and .main-content-area's padding so the drawing canvas gets as much
+     vertical room as possible; the canvas's own on-screen height is also
+     computed in JS from the live gap between the draw box and the
+     bottom-bar, so it fills whatever space is actually available rather
+     than a fixed guess. (3) The Toggle Shuffle button now shows its live
+     state ("Shuffle: ON/OFF") the same way the User Input Mode button
+     already did, instead of popping an alert() on every tap. (4) Tapping
+     the card counter (top-right, e.g. "3 / 12") now opens a small "Go to
+     Card" modal where the learner can type a card number and jump straight
+     to that position in the current study pass, reusing the existing
+     modal-overlay pattern already used for Delete Deck.
+      -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -237,6 +220,20 @@ body.has-deck #backFlipBtn {
   width: fit-content;           /* shrinks to content width, but won't exceed max-width */
 }
 
+/* Active only while User Input Mode is set to "Draw" — shrinks the
+   question card's own buffers so the drawing canvas below it gets as much
+   vertical space as possible. The canvas's actual on-screen height is
+   still computed in JS (sizeDrawCanvas) from the live gap between it and
+   the bottom bar, so these are just about freeing space above it. */
+body.drawing-mode #card {
+  margin: 50px 16px 6px;
+  min-height: 0;
+}
+
+body.drawing-mode .main-content-area {
+  padding: 50px 12px 150px;
+}
+
 img {
   max-width:100%;
   margin-top:10px;
@@ -300,7 +297,7 @@ img {
   min-width: 60px;
   text-align: center;
   line-height: 1.3;
-  pointer-events: none;                              /* so it doesn't block taps */
+  cursor: pointer;                                   /* tappable: opens "Go to Card" */
   transition: opacity 0.25s;
 }
 
@@ -492,6 +489,83 @@ input, textarea, select {
 #userAnswerArea:focus {
   border-color: #8bc34a;
   outline: none;
+}
+
+/* Draw box — the "Draw" option under User Input Mode. Freestyle writing/
+   drawing on the question card, with an optional ruled-lines background. */
+#drawBoxContainer {
+  display: none;               /* toggled to "flex" from JS when Draw mode is active */
+  flex-direction: column;
+  width: 100%;
+  max-width: 600px;
+  margin: 16px auto 8px;
+  box-sizing: border-box;
+  padding: 0 4px;
+}
+
+.draw-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  gap: 10px;
+}
+
+.draw-lines-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  color: var(--muted-text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.draw-lines-toggle input {
+  width: auto;
+  margin: 0;
+}
+
+#clearDrawBtn {
+  width: auto;
+  padding: 8px 16px;
+  margin: 0;
+  font-size: 14px;
+  border: none;
+  border-radius: 8px;
+  background: #555;
+  color: white;
+  cursor: pointer;
+}
+
+.draw-canvas-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 160px;
+  background: var(--answer-bg);
+  border: 2px solid var(--answer-border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* Two stacked canvases at the exact same size: a background one that only
+   ever holds the optional ruled lines, and a transparent one on top that
+   captures the learner's actual strokes. Kept separate so switching the
+   ruled-lines option on/off repaints just the background layer and never
+   erases anything the learner has already drawn. */
+.draw-canvas-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#drawCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: transparent;
+  touch-action: none;          /* so drawing doesn't also scroll the page */
 }
 
 #autoCloseMessage {
@@ -690,7 +764,7 @@ input, textarea, select {
 
       <button onclick="markDone()">Mark Done ✔</button>
       <button onclick="restartDeck()">Restart Deck</button>
-      <button onclick="toggleMode()">Toggle Shuffle</button>
+      <button onclick="toggleMode()">Shuffle: <span id="shuffleModeStatus">–</span></button>
     </div>
   </div>
 
@@ -800,17 +874,45 @@ input, textarea, select {
   </div>
 </div>
 
+<!-- Tapping the card counter opens this: jump straight to a card number
+     within the current study pass. -->
+<div class="modal-overlay" id="goToCardModal">
+  <div class="modal-box">
+    <h3>Go to Card</h3>
+    <p>Enter a card number (1–<span id="goToCardMax">0</span>):</p>
+    <input type="number" id="goToCardInput" inputmode="numeric" min="1"
+           onkeydown="if(event.key==='Enter'){confirmGoToCard();}">
+    <div class="modal-buttons">
+      <button style="background:#555; color:white;" onclick="closeGoToCardModal()">Cancel</button>
+      <button style="background:#1e8e3e; color:white;" onclick="confirmGoToCard()">Go</button>
+    </div>
+  </div>
+</div>
+
 <button class="top-icon-btn menuBtn" onclick="toggleMenu()" aria-label="Open menu">☰</button>
 
 <button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()" aria-label="Go back or flip card">←</button>
 
-<div id="cardCounter" class="card-counter">– / –</div>
+<div id="cardCounter" class="card-counter" onclick="openGoToCardModal()">– / –</div>
 
 <div id="autoCloseMessage">Auto-close paused for 15 seconds</div>
 
 <div class="main-content-area">
   <div id="card">Tap “Show Question” to begin</div>
   <textarea id="userAnswerArea" placeholder="Type or write your answer here..."></textarea>
+
+  <div id="drawBoxContainer">
+    <div class="draw-toolbar">
+      <label class="draw-lines-toggle">
+        <input type="checkbox" id="drawLinesToggle" onchange="toggleDrawLines()"> Ruled Lines
+      </label>
+      <button type="button" id="clearDrawBtn" onclick="clearDrawCanvas()">Clear</button>
+    </div>
+    <div class="draw-canvas-wrap">
+      <canvas id="drawLinesCanvas"></canvas>
+      <canvas id="drawCanvas"></canvas>
+    </div>
+  </div>
 </div>
 
 <div class="bottom-bar">
@@ -835,14 +937,14 @@ let repeatQueue = [];
 let showingAnswer = false;
 let firstShow = true;
 let editingIndex = null;
-let userInputMode = false;   // default off
+let userInputMode = 'off';   // 'off' | 'text' | 'draw' — cycled by toggleInputMode()
 let autoCloseEnabled = true;
 let lastDeckSelectionTime = 0;
 const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 1 minute in milliseconds
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.5";
+const APP_VERSION = "1.6";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -857,6 +959,11 @@ const userAnswerArea = document.getElementById("userAnswerArea");
 const deckListEl = document.getElementById("deckList");
 const cardListEl = document.getElementById("cardList");
 const sidebarEl = document.getElementById("sidebar");
+const drawBoxContainer = document.getElementById("drawBoxContainer");
+const drawLinesCanvasEl = document.getElementById("drawLinesCanvas");
+const drawCanvasEl = document.getElementById("drawCanvas");
+const drawCtx = drawCanvasEl.getContext("2d");
+const drawLinesCtx = drawLinesCanvasEl.getContext("2d");
 
 function loadData() {
   const raw = localStorage.getItem("studyData");
@@ -1217,18 +1324,43 @@ function toggleMode(){
   const deck=data.decks[currentDeck];
   deck.mode = deck.mode==="shuffle" ? "sequential":"shuffle";
   save();
-  alert("Mode: "+deck.mode);
+  updateShuffleStatus();
 }
 
+// Keeps the "Shuffle: ON/OFF" label on the Toggle Shuffle button in sync
+// with the current deck's mode, the same way the User Input Mode button
+// already reflects its own state.
+function updateShuffleStatus() {
+  const el = document.getElementById("shuffleModeStatus");
+  if (!el) return;
+  if (!currentDeck || !data.decks[currentDeck]) {
+    el.textContent = "–";
+    return;
+  }
+  el.textContent = data.decks[currentDeck].mode === "shuffle" ? "ON" : "OFF";
+}
+
+const INPUT_MODES = ["off", "text", "draw"];
+const INPUT_MODE_LABELS = { off: "OFF", text: "TEXT", draw: "DRAW" };
+
 function toggleInputMode() {
-  userInputMode = !userInputMode;
-  document.getElementById("inputModeStatus").textContent = userInputMode ? "ON" : "OFF";
+  const idx = INPUT_MODES.indexOf(userInputMode);
+  userInputMode = INPUT_MODES[(idx + 1) % INPUT_MODES.length];
+  document.getElementById("inputModeStatus").textContent = INPUT_MODE_LABELS[userInputMode];
+
+  updateDrawingModeClass();
 
   if (currentDeck) {
     startSession();   // restart current deck with new mode
   }
+}
 
-  alert("User Input Mode " + (userInputMode ? "ENABLED" : "DISABLED"));
+// Toggles the body-level class that shrinks the question card's own
+// buffers so the draw canvas has as much vertical room as possible. Only
+// relevant while Draw mode is selected — see the CSS rules on
+// body.drawing-mode.
+function updateDrawingModeClass() {
+  document.body.classList.toggle("drawing-mode", userInputMode === "draw");
 }
 
 // Light/Dark mode. The actual class was already applied (if needed) by the
@@ -1264,6 +1396,7 @@ function updateContextLabels() {
   const editLabel = document.getElementById("editCardsDeckName");
   if (addLabel) addLabel.textContent = label;
   if (editLabel) editLabel.textContent = label;
+  updateShuffleStatus();
 }
 
 function startSession() {
@@ -1296,6 +1429,9 @@ function startSession() {
   markDoneBtn.style.opacity = "1";
 
   cardEl.innerText = 'Tap “Show Question” to begin';
+  userAnswerArea.style.display = "none";
+  drawBoxContainer.style.display = "none";
+  updateDrawingModeClass();
 
   renderDecks();   // ← ensures highlight updates if coming from restart/complete
   renderCardList();
@@ -1326,12 +1462,21 @@ function showQuestion() {
     '<div class="inner">' + questionHtml + '</div>' +
     (card.img ? '<br><img src="' + card.img + '">' : "");
 
-  // Show user input area if mode is on
-  if (userInputMode) {
+  // Show the matching input widget for the current User Input Mode. Each
+  // new question always starts with a blank slate — the text box already
+  // cleared itself here before, and the draw canvas gets the same
+  // treatment via sizeDrawCanvas()'s resize (which clears its buffer).
+  if (userInputMode === "text") {
     userAnswerArea.style.display = "block";
-    userAnswerArea.value = "";               // clear previous input
+    userAnswerArea.value = "";
+    drawBoxContainer.style.display = "none";
+  } else if (userInputMode === "draw") {
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "flex";
+    sizeDrawCanvas();
   } else {
     userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "none";
   }
 
   showBtn.innerText = "Show Answer";
@@ -1343,9 +1488,10 @@ function showQuestion() {
 function showAnswer() {
   const card = sessionQueue[sessionIndex];
 
-  if (userInputMode) {
-    // The learner's free-text answer isn't auto-graded — just show the
-    // correct answer beneath it for self-comparison.
+  if (userInputMode === "text" || userInputMode === "draw") {
+    // The learner's free-text/drawn answer isn't auto-graded — just show
+    // the correct answer above it (and leave their input/drawing visible
+    // below) for self-comparison.
     cardEl.innerHTML = nl2br(card.a);
 
     showBtn.style.display = "none";
@@ -1846,6 +1992,186 @@ function clearAddCardFields() {
   document.getElementById("newImg").value = "";   // clears the file input
 }
 
+// ---------------------------------------------------------------------
+// Draw box (User Input Mode: Draw)
+//
+// Two stacked <canvas> elements at the exact same size: drawLinesCanvasEl
+// only ever holds the optional ruled-lines background, drawCanvasEl (on
+// top, transparent) captures the learner's actual strokes via Pointer
+// Events (covers mouse, touch, and pen with one code path). They're kept
+// separate so toggling ruled lines on/off only repaints the background
+// layer and never erases a drawing in progress.
+// ---------------------------------------------------------------------
+
+let drawLinesEnabled = false;
+try {
+  drawLinesEnabled = localStorage.getItem("flashcardsDrawLines") === "true";
+} catch (e) { /* localStorage unavailable — default to off */ }
+
+let isDrawingStroke = false;
+let lastDrawX = 0;
+let lastDrawY = 0;
+
+function getCanvasPoint(e) {
+  const rect = drawCanvasEl.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function startStroke(e) {
+  isDrawingStroke = true;
+  const p = getCanvasPoint(e);
+  lastDrawX = p.x;
+  lastDrawY = p.y;
+  e.preventDefault();
+}
+
+function continueStroke(e) {
+  if (!isDrawingStroke) return;
+  const p = getCanvasPoint(e);
+  drawCtx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--text").trim() || "#000000";
+  drawCtx.lineWidth = 2.5;
+  drawCtx.lineCap = "round";
+  drawCtx.lineJoin = "round";
+  drawCtx.beginPath();
+  drawCtx.moveTo(lastDrawX, lastDrawY);
+  drawCtx.lineTo(p.x, p.y);
+  drawCtx.stroke();
+  lastDrawX = p.x;
+  lastDrawY = p.y;
+  e.preventDefault();
+}
+
+function endStroke() {
+  isDrawingStroke = false;
+}
+
+drawCanvasEl.addEventListener("pointerdown", startStroke);
+drawCanvasEl.addEventListener("pointermove", continueStroke);
+drawCanvasEl.addEventListener("pointerup", endStroke);
+drawCanvasEl.addEventListener("pointercancel", endStroke);
+drawCanvasEl.addEventListener("pointerleave", endStroke);
+
+// Repaints just the ruled-lines background layer. Safe to call any time —
+// never touches drawCanvasEl, so it never loses the learner's strokes.
+function drawRuledLines() {
+  const w = drawLinesCanvasEl.width;
+  const h = drawLinesCanvasEl.height;
+  drawLinesCtx.clearRect(0, 0, w, h);
+  if (!drawLinesEnabled) return;
+
+  const spacing = 32;
+  drawLinesCtx.save();
+  drawLinesCtx.strokeStyle = document.body.classList.contains("light-mode")
+    ? "rgba(0,0,0,0.15)"
+    : "rgba(255,255,255,0.18)";
+  drawLinesCtx.lineWidth = 1;
+  for (let y = spacing; y < h; y += spacing) {
+    drawLinesCtx.beginPath();
+    drawLinesCtx.moveTo(0, y + 0.5);
+    drawLinesCtx.lineTo(w, y + 0.5);
+    drawLinesCtx.stroke();
+  }
+  drawLinesCtx.restore();
+}
+
+// Matches both canvases' pixel buffers to their current on-screen size.
+// Resizing a canvas always clears it, which is fine here: this only runs
+// when a fresh question is shown or the viewport actually changes size.
+function resizeCanvasBuffers() {
+  const wrap = document.querySelector(".draw-canvas-wrap");
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  drawLinesCanvasEl.width = w;
+  drawLinesCanvasEl.height = h;
+  drawCanvasEl.width = w;
+  drawCanvasEl.height = h;
+  drawRuledLines();
+}
+
+// Sizes the draw box to fill the live gap between it and the bottom bar,
+// so the canvas uses as much vertical space as the current question's
+// content leaves available, then (re)initializes its pixel buffers.
+function sizeDrawCanvas() {
+  if (getComputedStyle(drawBoxContainer).display === "none") return;
+
+  const wrap = document.querySelector(".draw-canvas-wrap");
+  const bottomBar = document.querySelector(".bottom-bar");
+  const wrapTop = wrap.getBoundingClientRect().top;
+  const bottomBarTop = bottomBar.getBoundingClientRect().top;
+  const available = bottomBarTop - wrapTop - 16; // small breathing room
+  const height = Math.max(160, Math.round(available));
+
+  wrap.style.height = height + "px";
+  resizeCanvasBuffers();
+}
+
+function clearDrawCanvas() {
+  drawCtx.clearRect(0, 0, drawCanvasEl.width, drawCanvasEl.height);
+}
+
+function toggleDrawLines() {
+  drawLinesEnabled = document.getElementById("drawLinesToggle").checked;
+  try {
+    localStorage.setItem("flashcardsDrawLines", drawLinesEnabled ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+  drawRuledLines();
+}
+
+// Keep the draw canvas correctly sized if the viewport changes (rotation,
+// browser chrome showing/hiding, etc.) while Draw mode is active.
+window.addEventListener("resize", () => {
+  if (userInputMode === "draw") sizeDrawCanvas();
+});
+
+// ---------------------------------------------------------------------
+// "Go to Card" — tapping the card counter opens a small modal to jump
+// straight to a card number within the current study pass.
+// ---------------------------------------------------------------------
+
+function openGoToCardModal() {
+  if (!currentDeck || sessionQueue.length === 0) return;
+
+  document.getElementById("goToCardMax").textContent = sessionQueue.length;
+  const input = document.getElementById("goToCardInput");
+  input.min = "1";
+  input.max = String(sessionQueue.length);
+  input.value = String(sessionIndex + 1);
+
+  document.getElementById("goToCardModal").classList.add("open");
+  input.focus();
+  input.select();
+}
+
+function closeGoToCardModal() {
+  document.getElementById("goToCardModal").classList.remove("open");
+}
+
+function confirmGoToCard() {
+  const input = document.getElementById("goToCardInput");
+  const num = parseInt(input.value, 10);
+
+  if (!num || num < 1 || num > sessionQueue.length) {
+    alert(`Please enter a number between 1 and ${sessionQueue.length}.`);
+    return;
+  }
+
+  sessionIndex = num - 1;
+  showingAnswer = false;
+  firstShow = false;   // we're jumping straight to a question, not the "first tap" state
+
+  showQuestion();
+  showBtn.style.display = "block";
+  showBtn.innerText = "Show Answer";
+  showBtn.onclick = handleShow;
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  markDoneBtn.style.display = "none";
+
+  updateBackButton();
+  updateCardCounter();
+  closeGoToCardModal();
+}
+
 function showAutoCloseMessage() {
   const msg = document.getElementById("autoCloseMessage");
   msg.style.opacity = "1";
@@ -1871,6 +2197,9 @@ function initVersionDisplay() {
 }
 initVersionDisplay();
 applyTheme();
+
+const drawLinesToggleEl = document.getElementById("drawLinesToggle");
+if (drawLinesToggleEl) drawLinesToggleEl.checked = drawLinesEnabled;
 
 // Lets the user pull a new version from inside the app instead of having to
 // delete and reinstall it. service-worker.js's own SW already self-activates
