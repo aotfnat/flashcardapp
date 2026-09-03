@@ -1,43 +1,20 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.7, SOC: (1) User Input Mode is now a 3-way cycle (Off → Text →
-     Draw → Off) instead of a boolean. The new "Draw" option shows a
-     freestyle drawing/writing canvas on the question card instead of the
-     text box, built as two stacked <canvas> elements — a background one
-     that renders optional ruled (horizontal) lines and a transparent one on
-     top that captures the actual pen/finger/mouse strokes via Pointer
-     Events. Kept as two canvases specifically so toggling "Ruled Lines"
-     on/off only repaints the background layer and never touches (or
-     erases) whatever the learner has already drawn. Each new question
-     starts with a fresh, blank canvas (consistent with how the existing
-     text-input box already clears itself per question) rather than
-     persisting drawings across cards, since a card's canvas is only
-     meaningful for that specific question. (2) While Draw mode is active,
-     a new `body.drawing-mode` CSS class shrinks #card's margins/min-height
-     and .main-content-area's padding so the drawing canvas gets as much
-     vertical room as possible; the canvas's own on-screen height is also
-     computed in JS from the live gap between the draw box and the
-     bottom-bar, so it fills whatever space is actually available rather
-     than a fixed guess. (3) The Toggle Shuffle button now shows its live
-     state ("Shuffle: ON/OFF") the same way the User Input Mode button
-     already did, instead of popping an alert() on every tap. (4) Tapping
-     the card counter (top-right, e.g. "3 / 12") now opens a small "Go to
-     Card" modal where the learner can type a card number and jump straight
-     to that position in the current study pass, reusing the existing
-     modal-overlay pattern already used for Delete Deck. (5) Study
-     position now survives the app being backgrounded/suspended (or the
-     page being killed and reloaded by the OS): sessionQueue/repeatQueue
-     are stored as indices into deck.cards (not card copies) and are
-     persisted, along with sessionIndex, showingAnswer, firstShow, and the
-     current deck + User Input Mode, to a separate "studyData_session" key
-     on every state-changing action and on visibilitychange/pagehide. On
-     load (or when switching back to a deck that wasn't finished), that
-     saved state is validated and restored instead of restarting the deck,
-     so an in-progress repeat queue is preserved until it's actually
-     cleared. Explicit resets (Restart Deck, changing User Input Mode,
-     deleting the active card) still force a fresh session. (6) The card
-     counter now parenthetically shows the card's actual position in the
-     deck (e.g. "3 / 12 (7)") whenever Shuffle is on, so a card can still
-     be found in Edit Cards without having to un-shuffle first.
+<!-- Version 1.8, SOC: Added a new Settings toggle, "Show Q&A Together" (persisted in
+     localStorage as flashcardsShowBoth, independent of any single deck's
+     session). When ON, showQuestion() renders the question and answer in
+     the card together (separated by a divider) instead of the normal
+     two-step reveal, and the bottom bar shows only a single "Next" button
+     — the Correct/Incorrect buttons are never shown in this mode, since
+     there's nothing to grade. Advancing to the next card is handled by a
+     new advanceCard() (like grade() but without touching repeatQueue),
+     and deck-completion now goes through a shared showDeckComplete()
+     helper used by both grade() and advanceCard(). The back/flip button
+     and updateBackButton() were taught to treat "answer shown" as
+     "sessionIndex > 0" in this mode, since there's no separate flip step
+     to undo. Toggling the setting forces a fresh pass (like changing
+     User Input Mode already did), and the Draw/Text answer inputs are
+     hidden while this mode is active since there's nothing left to
+     self-test against.
       -->
 <!DOCTYPE html>
 <html>
@@ -483,6 +460,28 @@ input, textarea, select {
   opacity: 0.92;
 }
 
+.qa-question {
+  margin-bottom: 4px;
+}
+
+.qa-divider {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+.qa-answer-label {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted-text);
+  margin-bottom: 4px;
+}
+
+.qa-answer {
+  color: #8bc34a;
+}
+
 #userAnswerArea {
   display: none;
   width: 100%;
@@ -850,6 +849,7 @@ input, textarea, select {
     <h3 class="menu-section-header" onclick="toggleMenuSection('sectionSettings')">Settings</h3>
     <div class="menu-section-content">
       <button onclick="toggleInputMode()">User Input Mode: <span id="inputModeStatus">OFF</span></button>
+      <button onclick="toggleShowBoth()">Show Q&amp;A Together: <span id="showBothStatus">OFF</span></button>
       <button onclick="toggleTheme()">Theme: <span id="themeModeStatus">Dark</span></button>
 
       <h4>App Info</h4>
@@ -956,13 +956,17 @@ let showingAnswer = false;
 let firstShow = true;
 let editingIndex = null;
 let userInputMode = 'off';   // 'off' | 'text' | 'draw' — cycled by toggleInputMode()
+let showBothMode = false;    // when true, Question+Answer render together with a single "Next" button
+try {
+  showBothMode = localStorage.getItem("flashcardsShowBoth") === "true";
+} catch (e) { /* localStorage unavailable — default to off */ }
 let autoCloseEnabled = true;
 let lastDeckSelectionTime = 0;
 const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 1 minute in milliseconds
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.7";
+const APP_VERSION = "1.8";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -1135,6 +1139,16 @@ function toggleMenuSection(sectionId) {
 function handleBackOrFlip() {
   if (!currentDeck) return;
 
+  if (showBothMode) {
+    // No separate flip step in this mode — Back always just steps to the
+    // previous card (or does nothing on the first card).
+    if (sessionIndex > 0) {
+      sessionIndex--;
+      showQuestion();
+    }
+    return;
+  }
+
   if (showingAnswer || correctBtn.style.display !== "none") {
     // Flip back to question (most common case)
     showQuestion();
@@ -1166,7 +1180,7 @@ function updateBackButton() {
   }
   backFlipBtn.style.display = "block";
 
-  const shouldEnable = showingAnswer || sessionIndex > 0;
+  const shouldEnable = showBothMode ? sessionIndex > 0 : (showingAnswer || sessionIndex > 0);
   backFlipBtn.disabled = !shouldEnable;
   backFlipBtn.style.opacity = shouldEnable ? "1" : "0.4";
 }
@@ -1453,6 +1467,25 @@ function toggleInputMode() {
   }
 }
 
+// Toggles the "Show Q&A Together" setting: when ON, the question and
+// answer render together in one step, with just a "Next" button instead
+// of Show Answer / Correct / Incorrect. This is a global display
+// preference (persisted in localStorage, like Theme) rather than
+// per-deck study state, so it isn't stored in sessionState.
+function toggleShowBoth() {
+  showBothMode = !showBothMode;
+  try {
+    localStorage.setItem("flashcardsShowBoth", showBothMode ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+
+  const status = document.getElementById("showBothStatus");
+  if (status) status.textContent = showBothMode ? "ON" : "OFF";
+
+  if (currentDeck) {
+    startSession(false);   // force a fresh pass under the new mode
+  }
+}
+
 // Toggles the body-level class that shrinks the question card's own
 // buffers so the draw canvas has as much vertical room as possible. Only
 // relevant while Draw mode is selected — see the CSS rules on
@@ -1596,6 +1629,14 @@ function restoreCardDisplay() {
 
   markDoneBtn.style.display = "none";
   showBtn.onclick = handleShow;
+
+  if (showBothMode) {
+    // Combined view is always rendered via showQuestion() — there's no
+    // separate showAnswer() step to resume into.
+    showQuestion();
+    return;
+  }
+
   if (showingAnswer) {
     showAnswer();
   } else {
@@ -1610,6 +1651,16 @@ function handleShow(){
     return;
   }
 
+  if (showBothMode) {
+    if (firstShow) {
+      showQuestion();
+      firstShow = false;
+    } else {
+      advanceCard();
+    }
+    return;
+  }
+
   if(firstShow){
     showQuestion();
     firstShow=false;
@@ -1621,6 +1672,38 @@ function handleShow(){
 function showQuestion() {
   const deck = data.decks[currentDeck];
   const card = deck.cards[sessionQueue[sessionIndex]];
+
+  if (showBothMode) {
+    // Combined view: no separate reveal step, so treat the card as
+    // "answer shown" for the back-button and session-resume logic.
+    showingAnswer = true;
+
+    const html =
+      '<div class="inner">' +
+        '<div class="qa-question">' + nl2br(card.q) + '</div>' +
+        (card.img ? '<img src="' + card.img + '">' : "") +
+        '<hr class="qa-divider">' +
+        '<div class="qa-answer-label">Answer</div>' +
+        '<div class="qa-answer">' + nl2br(card.a) + '</div>' +
+      '</div>';
+    cardEl.innerHTML = html;
+
+    // Self-testing inputs don't make sense once the answer is already visible.
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "none";
+
+    showBtn.innerText = "Next";
+    showBtn.style.display = "block";
+    showBtn.onclick = handleShow;
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "none";
+
+    updateBackButton();
+    updateCardCounter();
+    saveSession();
+    return;
+  }
 
   // Set before rendering (rather than left to callers to set afterward) so
   // that saveSession() below always persists the correct state, even
@@ -1689,6 +1772,24 @@ function showAnswer() {
   saveSession();
 }
 
+// Shared "end of pass, nothing left to repeat" rendering, used by both
+// grade() (normal/graded study) and advanceCard() (Show Q&A Together mode).
+function showDeckComplete() {
+  cardEl.innerHTML = '<strong>Deck Complete!</strong><br><br>';
+
+  // Change button to "Restart Deck"
+  showBtn.innerText = "Restart Deck";
+  showBtn.onclick = restartDeck;           // ← override the click handler
+
+  // Make sure other buttons are hidden
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  showBtn.style.display = "block";
+  markDoneBtn.style.display = "block";
+
+  saveSession();
+}
+
 function grade(correct) {
   const cardIndex = sessionQueue[sessionIndex];
   if (!correct) {
@@ -1714,26 +1815,38 @@ function grade(correct) {
       sessionIndex = 0;
       showQuestion();
     } else {
-      cardEl.innerHTML =
-        '<strong>Deck Complete!</strong><br><br>';
-
-      // Change button to "Restart Deck"
-      showBtn.innerText = "Restart Deck";
-      showBtn.onclick = restartDeck;           // ← override the click handler
-
-      // Make sure other buttons are hidden
-      correctBtn.style.display = "none";
-      incorrectBtn.style.display = "none";
-      showBtn.style.display = "block";
-      markDoneBtn.style.display = "block";
-
-      saveSession();
+      showDeckComplete();
       return;
     }
   }
 
   showQuestion();
   showingAnswer = false;
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+// "Next" in Show Q&A Together mode: advances the pass like grade() does,
+// but there's nothing to grade, so it never touches repeatQueue — each
+// card is simply shown once per pass.
+function advanceCard() {
+  sessionIndex++;
+
+  if (sessionIndex >= sessionQueue.length) {
+    if (repeatQueue.length > 0) {
+      sessionQueue = repeatQueue;
+      repeatQueue = [];
+      sessionIndex = 0;
+      showQuestion();
+    } else {
+      showDeckComplete();
+      return;
+    }
+  } else {
+    showQuestion();
+  }
+
   updateBackButton();
   updateCardCounter();
   saveSession();
@@ -2398,6 +2511,9 @@ applyTheme();
 
 const drawLinesToggleEl = document.getElementById("drawLinesToggle");
 if (drawLinesToggleEl) drawLinesToggleEl.checked = drawLinesEnabled;
+
+const showBothStatusEl = document.getElementById("showBothStatus");
+if (showBothStatusEl) showBothStatusEl.textContent = showBothMode ? "ON" : "OFF";
 
 // Lets the user pull a new version from inside the app instead of having to
 // delete and reinstall it. service-worker.js's own SW already self-activates
