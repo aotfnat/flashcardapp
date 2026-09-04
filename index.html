@@ -1,20 +1,43 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.8, SOC: Added a new Settings toggle, "Show Q&A Together" (persisted in
-     localStorage as flashcardsShowBoth, independent of any single deck's
-     session). When ON, showQuestion() renders the question and answer in
-     the card together (separated by a divider) instead of the normal
-     two-step reveal, and the bottom bar shows only a single "Next" button
-     — the Correct/Incorrect buttons are never shown in this mode, since
-     there's nothing to grade. Advancing to the next card is handled by a
-     new advanceCard() (like grade() but without touching repeatQueue),
-     and deck-completion now goes through a shared showDeckComplete()
-     helper used by both grade() and advanceCard(). The back/flip button
-     and updateBackButton() were taught to treat "answer shown" as
-     "sessionIndex > 0" in this mode, since there's no separate flip step
-     to undo. Toggling the setting forces a fresh pass (like changing
-     User Input Mode already did), and the Draw/Text answer inputs are
-     hidden while this mode is active since there's nothing left to
-     self-test against.
+<!-- Version 1.9, SOC: Deck management overhaul.
+     (1) FOLDERS: decks can now be organized into folders (data.folders /
+     data.folderOrder / data.rootOrder — see reconcileOrder(), which keeps
+     these in sync with data.decks and is safe to call repeatedly). Each
+     folder is collapsible and defaults to collapsed unless the user
+     expanded it (persisted per-folder) or it currently contains the
+     active deck/multi-study session (computed at render time, not
+     persisted).
+     (2) DRAG-AND-DROP: a small handle on every deck/folder row drives a
+     custom Pointer-Events-based drag (startDrag/onDragMove/onDragEnd/
+     computeDropTarget/applyDrop) — chosen over native HTML5 drag-and-drop
+     because that doesn't work reliably on touch. Supports reordering
+     decks and folders, and moving decks in/out of folders.
+     (3) MULTI-SELECT: a "Select Decks" toggle in the Decks menu adds
+     checkboxes; the existing Mark Done / Restart Deck / Shuffle buttons
+     are repurposed to act on the whole selection when one or more decks
+     are checked (see markDone/restartDeck/toggleMode), and dragging a
+     selected deck while others are also selected moves the whole
+     selection together as one block (orderedSelectedDecks()). A new
+     "Study Selected" button studies 1 deck normally or several at once
+     via the new multi-deck study engine (multiQueue/multiIndex/
+     multiRepeatQueue + startMultiStudy/showMultiQuestion/showMultiAnswer/
+     gradeMulti/advanceMulti — parallel implementations of the existing
+     single-deck study functions, since a lone card index isn't enough
+     once cards from multiple decks are mixed together). Toggling Shuffle
+     with 2+ decks selected now controls whether "Study Selected" mixes
+     every selected deck's cards together in one shuffle (buildQueue) —
+     previously shuffle only ever reordered a single deck's own cards, so
+     multi-deck study always went one deck at a time regardless of mode.
+     A multi-deck session's own progress is now also persisted and resumed
+     across backgrounding/reload (sessionState.activeMultiStudy /
+     lastMode), the same way per-deck sessions already were.
+     (4) Add Card / Edit Cards and the per-card position hint in the card
+     counter only make sense against one unambiguous deck, so both are
+     disabled while multi-select is on or a multi-deck study is active
+     (updateAddEditAvailability()); the counter shows the current card's
+     source deck name instead during multi-study, which is more useful
+     than a raw position once decks are shuffled together anyway.
+     Full JSON backups now also include the folder structure.
       -->
 <!DOCTYPE html>
 <html>
@@ -749,6 +772,153 @@ input, textarea, select {
   padding: 12px;
 }
 
+/* ---------------------------------------------------------------------
+   Folders, drag-and-drop reordering, and multi-select (v1.9)
+   --------------------------------------------------------------------- */
+
+.deckItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.deck-label {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drag-handle {
+  flex-shrink: 0;
+  cursor: grab;
+  touch-action: none;
+  padding: 4px 6px;
+  margin: -4px -2px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--muted-text);
+  user-select: none;
+}
+
+.deck-select-checkbox {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.deckItem.selected {
+  outline: 2px solid #8bc34a;
+  outline-offset: -2px;
+}
+
+.folderItem {
+  margin: 6px 0;
+}
+
+.folder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--section-bg);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.folder-header:hover {
+  background: var(--section-bg-hover);
+}
+
+.folderItem.contains-active .folder-header {
+  border-left: 3px solid #8bc34a;
+  padding-left: 9px;
+}
+
+.folder-arrow {
+  flex-shrink: 0;
+  width: 14px;
+  display: inline-block;
+}
+
+.folder-label {
+  flex: 1;
+  text-align: left;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-delete {
+  flex-shrink: 0;
+  color: var(--muted-text);
+  padding: 2px 8px;
+  font-size: 15px;
+}
+
+.folder-delete:hover {
+  color: #c62828;
+}
+
+.folder-content {
+  display: none;
+  padding-left: 20px;
+  margin-top: 4px;
+}
+
+.folderItem.open > .folder-content {
+  display: block;
+}
+
+.drag-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 6000;
+  background: var(--deck-active-bg);
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  opacity: 0.92;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+body.dragging-active {
+  cursor: grabbing;
+}
+
+.deckItem.drag-over-top {
+  box-shadow: inset 0 3px 0 0 #8bc34a;
+}
+
+.deckItem.drag-over-bottom {
+  box-shadow: inset 0 -3px 0 0 #8bc34a;
+}
+
+.folder-header.drag-over-inside,
+.folder-content.drag-over-inside {
+  outline: 2px dashed #8bc34a;
+  outline-offset: -2px;
+}
+
+#multiSelectCount {
+  display: none;
+}
+
+#addEditFormArea.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+#addEditDisabledNote {
+  display: none;
+}
+
 </style>
 </head>
 <body>
@@ -775,9 +945,13 @@ input, textarea, select {
     <div class="menu-section-content">
       <div id="deckList"></div>
 
-      <button onclick="markDone()">Mark Done ✔</button>
-      <button onclick="restartDeck()">Restart Deck</button>
-      <button onclick="toggleMode()">Shuffle: <span id="shuffleModeStatus">–</span></button>
+      <button onclick="toggleMultiSelect()">Select Decks: <span id="multiSelectStatus">OFF</span></button>
+      <p class="deck-context-label" id="multiSelectCount">0 selected</p>
+
+      <button onclick="markDone()" id="markDoneMenuBtn">Mark Done ✔</button>
+      <button onclick="restartDeck()" id="restartDeckMenuBtn">Restart Deck</button>
+      <button onclick="toggleMode()" id="shuffleMenuBtn">Shuffle: <span id="shuffleModeStatus">–</span></button>
+      <button onclick="studySelected()" id="studySelectedBtn" style="display:none; background:#1e8e3e; color:white;">Study Selected</button>
     </div>
   </div>
 
@@ -786,30 +960,35 @@ input, textarea, select {
     <h3 class="menu-section-header" onclick="toggleMenuSection('sectionAddEdit')">Add/Edit</h3>
     <div class="menu-section-content">
       <button onclick="addDeck()">Add Deck</button>
+      <button onclick="addFolder()">Add Folder</button>
       <button onclick="deleteDeck()">Delete Deck</button>
 
-      <h4>Add Card</h4>
-      <p class="deck-context-label">Adding to: <strong id="addCardDeckName">–</strong></p>
-      <textarea id="newQ" placeholder="Question"></textarea>
-      <textarea id="newA" placeholder="Answer"></textarea>
-      <input type="file" id="newImg" accept="image/*">
-      <button onclick="addCard()">Add Card</button>
+      <p class="deck-context-label" id="addEditDisabledNote">Exit multi-select / multi-deck study to add or edit cards.</p>
 
-      <div class="collapsible-section">
-        <h3 class="collapsible-header" onclick="toggleEditSection()">Edit Cards</h3>
+      <div id="addEditFormArea">
+        <h4>Add Card</h4>
+        <p class="deck-context-label">Adding to: <strong id="addCardDeckName">–</strong></p>
+        <textarea id="newQ" placeholder="Question"></textarea>
+        <textarea id="newA" placeholder="Answer"></textarea>
+        <input type="file" id="newImg" accept="image/*">
+        <button onclick="addCard()">Add Card</button>
 
-        <div class="collapsible-content" id="editSection">
-          <p class="deck-context-label">Editing: <strong id="editCardsDeckName">–</strong></p>
-          <div id="cardList"></div>
-          <div id="editor" style="display:none;">
-            <textarea id="editQ" placeholder="Question"></textarea>
-            <textarea id="editA" placeholder="Answer"></textarea>
-            <input type="file" id="editImg" accept="image/*">
+        <div class="collapsible-section">
+          <h3 class="collapsible-header" onclick="toggleEditSection()">Edit Cards</h3>
 
-            <div class="editor-buttons">
-              <button onclick="saveEdit()">Save</button>
-              <button onclick="cancelEdit()">Cancel</button>
-              <button onclick="deleteCard()">Delete</button>
+          <div class="collapsible-content" id="editSection">
+            <p class="deck-context-label">Editing: <strong id="editCardsDeckName">–</strong></p>
+            <div id="cardList"></div>
+            <div id="editor" style="display:none;">
+              <textarea id="editQ" placeholder="Question"></textarea>
+              <textarea id="editA" placeholder="Answer"></textarea>
+              <input type="file" id="editImg" accept="image/*">
+
+              <div class="editor-buttons">
+                <button onclick="saveEdit()">Save</button>
+                <button onclick="cancelEdit()">Cancel</button>
+                <button onclick="deleteCard()">Delete</button>
+              </div>
             </div>
           </div>
         </div>
@@ -964,9 +1143,27 @@ let autoCloseEnabled = true;
 let lastDeckSelectionTime = 0;
 const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 1 minute in milliseconds
 
+// ---------------------------------------------------------------------
+// Folders + multi-select + multi-deck study state (v1.9)
+// ---------------------------------------------------------------------
+let multiSelectMode = false;      // true while the "Select Decks" toggle is on
+let selectedDecks = new Set();    // deck names checked while multiSelectMode is on
+let multiShuffleTogether = false; // whether "Study Selected" mixes decks together
+
+let inMultiStudy = false;         // true while actively studying >1 deck at once
+let multiStudyDecks = null;       // array of deck names in the active multi-study session
+let multiQueue = [];              // array of {deck, idx} refs — the combined study pass
+let multiIndex = 0;
+let multiRepeatQueue = [];
+let multiShowingAnswer = false;
+let multiFirstShow = true;
+
+let dragState = null;             // active custom drag-and-drop operation, if any
+let lastDragOverEl = null;
+
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.8";
+const APP_VERSION = "1.9";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -1021,6 +1218,98 @@ function loadData() {
   return parsed;
 }
 
+// ---------------------------------------------------------------------
+// Folder + deck ordering (v1.9). Kept as separate lists rather than a
+// single numeric "order" field on each deck, so reordering is just array
+// splicing:
+//   data.folders[name]     = { expanded: bool }
+//   data.folderOrder[name] = [deckName, ...]     (order within that folder)
+//   data.rootOrder          = [{type:'deck'|'folder', name}, ...] (top level)
+// reconcileOrder() is the single source of truth for keeping these in sync
+// with data.decks — it's cheap and safe to call repeatedly (e.g. at the
+// top of every renderDecks()), so new/imported/restored decks, deleted
+// decks, and freshly-created folders always end up exactly once in the
+// right list without every call site needing to remember to update order
+// data by hand.
+// ---------------------------------------------------------------------
+function reconcileOrder() {
+  if (!data.folders || typeof data.folders !== "object") data.folders = {};
+  if (!data.folderOrder || typeof data.folderOrder !== "object") data.folderOrder = {};
+  if (!Array.isArray(data.rootOrder)) data.rootOrder = [];
+
+  // Drop rootOrder entries referencing decks/folders that no longer exist.
+  data.rootOrder = data.rootOrder.filter(e => {
+    if (!e || !e.name) return false;
+    if (e.type === "deck") return !!data.decks[e.name];
+    if (e.type === "folder") return !!data.folders[e.name];
+    return false;
+  });
+
+  // Drop folderOrder entries for folders that no longer exist, or decks
+  // that no longer exist / no longer belong to that folder.
+  Object.keys(data.folderOrder).forEach(fName => {
+    if (!data.folders[fName]) { delete data.folderOrder[fName]; return; }
+    if (!Array.isArray(data.folderOrder[fName])) data.folderOrder[fName] = [];
+    data.folderOrder[fName] = data.folderOrder[fName].filter(
+      n => data.decks[n] && data.decks[n].folder === fName
+    );
+  });
+
+  // De-dupe: each deck should appear exactly once, in the list matching
+  // its own .folder field (root entries first, then per-folder lists).
+  const seen = new Set();
+  data.rootOrder = data.rootOrder.filter(e => {
+    if (e.type !== "deck") return true;
+    if (seen.has(e.name)) return false;
+    if (data.decks[e.name].folder) return false; // belongs in a folder now
+    seen.add(e.name);
+    return true;
+  });
+  Object.keys(data.folderOrder).forEach(fName => {
+    data.folderOrder[fName] = data.folderOrder[fName].filter(n => {
+      if (seen.has(n)) return false;
+      seen.add(n);
+      return true;
+    });
+  });
+
+  // Any deck missing entirely from both lists (new, imported, restored,
+  // or its .folder points at a folder that got deleted) gets placed now.
+  Object.keys(data.decks).forEach(name => {
+    if (seen.has(name)) return;
+    const deck = data.decks[name];
+    if (deck.folder && data.folders[deck.folder]) {
+      if (!data.folderOrder[deck.folder]) data.folderOrder[deck.folder] = [];
+      data.folderOrder[deck.folder].push(name);
+    } else {
+      deck.folder = null;
+      data.rootOrder.push({ type: "deck", name });
+    }
+    seen.add(name);
+  });
+
+  // Every folder must appear in rootOrder exactly once.
+  Object.keys(data.folders).forEach(fName => {
+    if (!data.rootOrder.some(e => e.type === "folder" && e.name === fName)) {
+      data.rootOrder.push({ type: "folder", name: fName });
+    }
+    if (!data.folderOrder[fName]) data.folderOrder[fName] = [];
+  });
+}
+
+// Flat list of every deck name in current display order (root-level decks
+// interleaved with folders, folder contents in their own order) — used to
+// pick a sensible default deck and to move a multi-selected block of
+// decks together while preserving their relative order.
+function flattenDeckOrder() {
+  const result = [];
+  data.rootOrder.forEach(e => {
+    if (e.type === "deck") result.push(e.name);
+    else if (e.type === "folder") (data.folderOrder[e.name] || []).forEach(n => result.push(n));
+  });
+  return result;
+}
+
 function save(){
   try {
     localStorage.setItem("studyData", JSON.stringify(data));
@@ -1050,7 +1339,7 @@ function save(){
 const SESSION_KEY = "studyData_session";
 
 function loadSessionState() {
-  const empty = { currentDeck: null, userInputMode: "off", decks: {} };
+  const empty = { currentDeck: null, userInputMode: "off", decks: {}, lastMode: "single", activeMultiStudy: null };
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return empty;
@@ -1061,6 +1350,8 @@ function loadSessionState() {
     if (typeof parsed.currentDeck !== "string") parsed.currentDeck = null;
     if (!["off", "text", "draw"].includes(parsed.userInputMode)) parsed.userInputMode = "off";
     if (!parsed.decks || typeof parsed.decks !== "object") parsed.decks = {};
+    if (!["single", "multi"].includes(parsed.lastMode)) parsed.lastMode = "single";
+    if (!parsed.activeMultiStudy || typeof parsed.activeMultiStudy !== "object") parsed.activeMultiStudy = null;
 
     return parsed;
   } catch (err) {
@@ -1073,17 +1364,24 @@ let sessionState = loadSessionState();
 
 function saveSession() {
   try {
-    sessionState.currentDeck = currentDeck;
     sessionState.userInputMode = userInputMode;
 
-    if (currentDeck) {
-      sessionState.decks[currentDeck] = {
-        queue: sessionQueue.slice(),
-        repeat: repeatQueue.slice(),
-        index: sessionIndex,
-        showingAnswer: showingAnswer,
-        firstShow: firstShow
-      };
+    if (inMultiStudy) {
+      sessionState.lastMode = "multi";
+      saveMultiSession();
+    } else {
+      sessionState.lastMode = "single";
+      sessionState.currentDeck = currentDeck;
+
+      if (currentDeck) {
+        sessionState.decks[currentDeck] = {
+          queue: sessionQueue.slice(),
+          repeat: repeatQueue.slice(),
+          index: sessionIndex,
+          showingAnswer: showingAnswer,
+          firstShow: firstShow
+        };
+      }
     }
 
     localStorage.setItem(SESSION_KEY, JSON.stringify(sessionState));
@@ -1092,6 +1390,36 @@ function saveSession() {
     // with an alert, unlike losing actual deck data in save().
     console.warn("Could not save session state:", err);
   }
+}
+
+// Persists the in-progress multi-deck study session (if any) into
+// sessionState, mirroring the per-deck resume points stored for single-deck
+// study. Called from saveSession() whenever inMultiStudy is true, and also
+// right before leaving multi-study for a single deck so progress isn't lost.
+function saveMultiSession() {
+  if (!inMultiStudy || !multiStudyDecks) return;
+  sessionState.activeMultiStudy = {
+    decks: multiStudyDecks.slice(),
+    queue: multiQueue.slice(),
+    repeat: multiRepeatQueue.slice(),
+    index: multiIndex,
+    showingAnswer: multiShowingAnswer,
+    firstShow: multiFirstShow
+  };
+}
+
+// A saved multi-study resume point is only trusted if every {deck, idx}
+// reference still points at a real deck/card (edits/deletions since the
+// save could have invalidated it).
+function isValidMultiSaved(saved) {
+  if (!saved || !Array.isArray(saved.decks) || saved.decks.length < 2) return false;
+  if (!saved.decks.every(n => data.decks[n])) return false;
+  const validRef = r => r && data.decks[r.deck] &&
+    Number.isInteger(r.idx) && r.idx >= 0 && r.idx < data.decks[r.deck].cards.length;
+  if (!Array.isArray(saved.queue) || !saved.queue.every(validRef)) return false;
+  if (!Array.isArray(saved.repeat) || !saved.repeat.every(validRef)) return false;
+  if (typeof saved.index !== "number" || saved.index < 0 || saved.index > saved.queue.length) return false;
+  return true;
 }
 
 // Removes any saved resume point for a deck (e.g. after it's deleted, or
@@ -1137,6 +1465,39 @@ function toggleMenuSection(sectionId) {
 }
 
 function handleBackOrFlip() {
+  if (inMultiStudy) {
+    if (!multiStudyDecks) return;
+
+    if (showBothMode) {
+      if (multiIndex > 0) {
+        multiIndex--;
+        showMultiQuestion();
+      }
+      return;
+    }
+
+    if (multiShowingAnswer || correctBtn.style.display !== "none") {
+      showMultiQuestion();
+      showBtn.style.display = "block";
+      showBtn.innerText = "Show Answer";
+      correctBtn.style.display = "none";
+      incorrectBtn.style.display = "none";
+      multiShowingAnswer = false;
+      return;
+    }
+
+    if (multiIndex > 0) {
+      multiIndex--;
+      showMultiQuestion();
+      showBtn.style.display = "block";
+      showBtn.innerText = "Show Answer";
+      correctBtn.style.display = "none";
+      incorrectBtn.style.display = "none";
+      multiShowingAnswer = false;
+    }
+    return;
+  }
+
   if (!currentDeck) return;
 
   if (showBothMode) {
@@ -1174,6 +1535,14 @@ function handleBackOrFlip() {
 }
 
 function updateBackButton() {
+  if (inMultiStudy) {
+    backFlipBtn.style.display = "block";
+    const shouldEnable = showBothMode ? multiIndex > 0 : (multiShowingAnswer || multiIndex > 0);
+    backFlipBtn.disabled = !shouldEnable;
+    backFlipBtn.style.opacity = shouldEnable ? "1" : "0.4";
+    return;
+  }
+
   if (!currentDeck) {
     backFlipBtn.style.display = "none";
     return;
@@ -1186,6 +1555,23 @@ function updateBackButton() {
 }
 
 function updateCardCounter() {
+  if (inMultiStudy) {
+    const total = multiQueue.length;
+    const current = total > 0 ? multiIndex + 1 : 0;
+    let text = `${current} / ${total}`;
+
+    // A raw "real position" number wouldn't mean anything across multiple
+    // decks, so show which deck the current card belongs to instead —
+    // most useful exactly when shuffled together mixes the decks up.
+    if (total > 0 && multiIndex < multiQueue.length) {
+      text += ` (${multiQueue[multiIndex].deck})`;
+    }
+
+    counterEl.textContent = text;
+    counterEl.style.opacity = total > 0 ? "1" : "0.3";
+    return;
+  }
+
   if (!currentDeck || !data.decks[currentDeck]) {
     counterEl.textContent = "– / –";
     counterEl.style.opacity = "0.3";
@@ -1211,47 +1597,213 @@ function updateCardCounter() {
 }
 
 function renderDecks() {
+  reconcileOrder();
   deckListEl.innerHTML = "";
 
-  Object.keys(data.decks).forEach(name => {
-    const div = document.createElement("div");
-    div.className = "deckItem";
-
-    if (data.decks[name].done) {
-      div.classList.add("done");
+  data.rootOrder.forEach(entry => {
+    if (entry.type === "folder" && data.folders[entry.name]) {
+      deckListEl.appendChild(renderFolderRow(entry.name));
+    } else if (entry.type === "deck" && data.decks[entry.name]) {
+      deckListEl.appendChild(renderDeckRow(entry.name));
     }
-    if (name === currentDeck) {
-      div.classList.add("active");
-    }
-
-    const cardCount = data.decks[name].cards.length;
-    div.textContent = `${name} (${cardCount})`;
-
-    div.onclick = () => {
-      if (currentDeck && currentDeck !== name) saveSession(); // flush outgoing deck's position first
-      currentDeck = name;
-
-      startSession(true); // resume this deck's saved position/repeat queue, if any
-
-      const timeSinceLastSelection = Date.now() - lastDeckSelectionTime;
-
-      if (autoCloseEnabled && timeSinceLastSelection <= AUTO_CLOSE_GRACE_PERIOD) {
-        // Grace period is active → keep sidebar open and show message
-        showAutoCloseMessage();
-      } else {
-        // Normal behavior: close the sidebar
-        toggleMenu();
-      }
-
-      // Update timestamp so grace period starts now
-      lastDeckSelectionTime = Date.now();
-
-      renderDecks();
-      renderCardList();
-    };
-
-    deckListEl.appendChild(div);
   });
+
+  updateMultiSelectUI();
+}
+
+function renderFolderRow(folderName) {
+  const folder = data.folders[folderName];
+  const deckNames = (data.folderOrder[folderName] || []).filter(n => data.decks[n]);
+  const containsActive = deckNames.includes(currentDeck) ||
+    (inMultiStudy && multiStudyDecks && deckNames.some(n => multiStudyDecks.includes(n)));
+  const isOpen = folder.expanded || containsActive;
+
+  const wrap = document.createElement("div");
+  wrap.className = "folderItem" + (isOpen ? " open" : "") + (containsActive ? " contains-active" : "");
+  wrap.dataset.folder = folderName;
+
+  const header = document.createElement("div");
+  header.className = "folder-header";
+
+  const handle = makeDragHandle("folder", folderName);
+  header.appendChild(handle);
+
+  const arrow = document.createElement("span");
+  arrow.className = "folder-arrow";
+  arrow.textContent = isOpen ? "▾" : "▸";
+  header.appendChild(arrow);
+
+  const label = document.createElement("span");
+  label.className = "folder-label";
+  label.textContent = `${folderName} (${deckNames.length})`;
+  header.appendChild(label);
+
+  const delBtn = document.createElement("span");
+  delBtn.className = "folder-delete";
+  delBtn.textContent = "✕";
+  delBtn.title = "Delete folder";
+  delBtn.onclick = (e) => { e.stopPropagation(); deleteFolder(folderName); };
+  header.appendChild(delBtn);
+
+  header.onclick = (e) => {
+    if (e.target === delBtn || e.target.closest(".drag-handle")) return;
+    folder.expanded = !isOpen;
+    save();
+    renderDecks();
+  };
+
+  wrap.appendChild(header);
+
+  const content = document.createElement("div");
+  content.className = "folder-content";
+  content.dataset.folderContent = folderName;
+  deckNames.forEach(name => content.appendChild(renderDeckRow(name)));
+  wrap.appendChild(content);
+
+  return wrap;
+}
+
+function renderDeckRow(name) {
+  const deck = data.decks[name];
+  const div = document.createElement("div");
+  div.className = "deckItem";
+  div.dataset.dragType = "deck";
+  div.dataset.dragName = name;
+
+  if (deck.done) div.classList.add("done");
+  if (name === currentDeck) div.classList.add("active");
+  if (inMultiStudy && multiStudyDecks && multiStudyDecks.includes(name)) div.classList.add("active");
+  if (selectedDecks.has(name)) div.classList.add("selected");
+
+  const handle = makeDragHandle("deck", name);
+  div.appendChild(handle);
+
+  if (multiSelectMode) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "deck-select-checkbox";
+    cb.checked = selectedDecks.has(name);
+    cb.onclick = (e) => { e.stopPropagation(); toggleDeckSelection(name); };
+    div.appendChild(cb);
+  }
+
+  const label = document.createElement("span");
+  label.className = "deck-label";
+  label.textContent = `${name} (${deck.cards.length})`;
+  div.appendChild(label);
+
+  div.onclick = (e) => {
+    if (e.target.closest(".drag-handle") || e.target.classList.contains("deck-select-checkbox")) return;
+    if (multiSelectMode) {
+      toggleDeckSelection(name);
+      return;
+    }
+    selectDeckAndStudy(name);
+  };
+
+  return div;
+}
+
+// Extracted from the old inline deckItem.onclick — also now responsible for
+// cleanly exiting an in-progress multi-deck study session (saving its
+// resume point first) when the learner taps a single deck instead.
+function selectDeckAndStudy(name) {
+  if (inMultiStudy) {
+    saveMultiSession();
+    inMultiStudy = false;
+    multiStudyDecks = null;
+  }
+
+  if (currentDeck && currentDeck !== name) saveSession(); // flush outgoing deck's position first
+  currentDeck = name;
+
+  startSession(true); // resume this deck's saved position/repeat queue, if any
+
+  const timeSinceLastSelection = Date.now() - lastDeckSelectionTime;
+
+  if (autoCloseEnabled && timeSinceLastSelection <= AUTO_CLOSE_GRACE_PERIOD) {
+    // Grace period is active → keep sidebar open and show message
+    showAutoCloseMessage();
+  } else {
+    // Normal behavior: close the sidebar
+    toggleMenu();
+  }
+
+  // Update timestamp so grace period starts now
+  lastDeckSelectionTime = Date.now();
+
+  renderDecks();
+  renderCardList();
+}
+
+// ---------------------------------------------------------------------
+// Multi-select mode — lets the learner check off several decks at once to
+// batch Mark Done / Restart, drag them as a group, or study them together.
+// ---------------------------------------------------------------------
+
+function toggleMultiSelect() {
+  multiSelectMode = !multiSelectMode;
+  if (!multiSelectMode) selectedDecks.clear();
+  document.getElementById("multiSelectStatus").textContent = multiSelectMode ? "ON" : "OFF";
+  renderDecks();
+  updateAddEditAvailability();
+}
+
+function toggleDeckSelection(name) {
+  if (selectedDecks.has(name)) selectedDecks.delete(name);
+  else selectedDecks.add(name);
+  renderDecks();
+}
+
+function updateMultiSelectUI() {
+  const countEl = document.getElementById("multiSelectCount");
+  const studyBtn = document.getElementById("studySelectedBtn");
+  const restartBtn = document.getElementById("restartDeckMenuBtn");
+  const markBtn = document.getElementById("markDoneMenuBtn");
+  const shuffleStatusEl = document.getElementById("shuffleModeStatus");
+
+  if (multiSelectMode) {
+    countEl.style.display = "block";
+    countEl.textContent = `${selectedDecks.size} selected`;
+    studyBtn.style.display = selectedDecks.size > 0 ? "block" : "none";
+    restartBtn.textContent = selectedDecks.size > 0 ? "Restart Selected" : "Restart Deck";
+    markBtn.textContent = selectedDecks.size > 0 ? "Mark Done ✔ (Selected)" : "Mark Done ✔";
+  } else {
+    countEl.style.display = "none";
+    studyBtn.style.display = "none";
+    restartBtn.textContent = "Restart Deck";
+    markBtn.textContent = "Mark Done ✔";
+  }
+
+  if (multiSelectMode && selectedDecks.size > 1) {
+    shuffleStatusEl.textContent = multiShuffleTogether ? "ON (mix decks)" : "OFF";
+  } else {
+    updateShuffleStatus();
+  }
+}
+
+// Names of the selected decks, in their current display order — used so a
+// dragged multi-selection moves as one coherent, order-preserving block.
+function orderedSelectedDecks() {
+  return flattenDeckOrder().filter(n => selectedDecks.has(n));
+}
+
+function studySelected() {
+  if (selectedDecks.size === 0) return;
+  const names = orderedSelectedDecks();
+
+  if (names.length === 1) {
+    selectDeckAndStudy(names[0]);
+  } else {
+    startMultiStudy(names, multiShuffleTogether, true);
+    sidebarEl.classList.remove("open");
+  }
+
+  multiSelectMode = false;
+  selectedDecks.clear();
+  document.getElementById("multiSelectStatus").textContent = "OFF";
+  renderDecks();
+  updateAddEditAvailability();
 }
 
 function renderCardList() {
@@ -1296,15 +1848,261 @@ function renderCardList() {
   });
 }
 
+// ---------------------------------------------------------------------
+// Drag-and-drop reordering — custom, Pointer-Events-based (rather than
+// HTML5 drag-and-drop, which doesn't behave well on touch) so decks and
+// folders can be reordered and moved in/out of folders on a phone. Each
+// row has a small drag-handle; dragging a selected deck while multiple
+// decks are selected moves the whole selection as one block.
+// ---------------------------------------------------------------------
+
+function makeDragHandle(type, name) {
+  const h = document.createElement("span");
+  h.className = "drag-handle";
+  h.textContent = "⠿";
+  h.setAttribute("aria-label", "Drag to reorder");
+  h.addEventListener("pointerdown", (e) => startDrag(e, type, name));
+  return h;
+}
+
+function startDrag(e, type, name) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const names = (type === "deck" && multiSelectMode && selectedDecks.has(name) && selectedDecks.size > 1)
+    ? orderedSelectedDecks()
+    : [name];
+
+  const rowSelector = type === "deck" ? ".deckItem" : ".folder-header";
+  const sourceEl = e.target.closest(rowSelector) || e.target;
+  const rect = sourceEl.getBoundingClientRect();
+
+  const ghost = document.createElement("div");
+  ghost.className = "drag-ghost";
+  ghost.textContent = type === "folder" ? `📁 ${name}` : (names.length > 1 ? `${names.length} decks` : name);
+  ghost.style.width = rect.width + "px";
+  ghost.style.left = rect.left + "px";
+  ghost.style.top = rect.top + "px";
+  document.body.appendChild(ghost);
+
+  dragState = { type, names, ghost, offsetY: e.clientY - rect.top };
+  document.body.classList.add("dragging-active");
+
+  window.addEventListener("pointermove", onDragMove);
+  window.addEventListener("pointerup", onDragEnd);
+  window.addEventListener("pointercancel", onDragEnd);
+}
+
+function onDragMove(e) {
+  if (!dragState) return;
+  dragState.ghost.style.top = (e.clientY - dragState.offsetY) + "px";
+  updateDropIndicator(e.clientX, e.clientY);
+}
+
+function onDragEnd(e) {
+  if (!dragState) return;
+  const drop = computeDropTarget(e.clientX, e.clientY);
+  clearDropIndicator();
+  dragState.ghost.remove();
+
+  window.removeEventListener("pointermove", onDragMove);
+  window.removeEventListener("pointerup", onDragEnd);
+  window.removeEventListener("pointercancel", onDragEnd);
+  document.body.classList.remove("dragging-active");
+
+  const finishedState = dragState;
+  dragState = null;
+
+  if (drop) applyDrop(finishedState.type, finishedState.names, drop);
+}
+
+// Figures out what's under the pointer and translates it into a structured
+// drop target: { containerName: folderName|null, beforeName: name|null }
+// for decks (containerName null = root level), or { beforeName } for
+// reordering a folder among its root-level siblings.
+function computeDropTarget(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el || !dragState) return null;
+
+  const deckRow = el.closest(".deckItem");
+  if (deckRow) {
+    const targetName = deckRow.dataset.dragName;
+    if (dragState.type === "folder" || dragState.names.includes(targetName)) return null;
+
+    const rect = deckRow.getBoundingClientRect();
+    const before = y < rect.top + rect.height / 2;
+    const folderContentParent = deckRow.closest(".folder-content");
+    const containerName = folderContentParent ? folderContentParent.dataset.folderContent : null;
+
+    if (before) {
+      return { containerName, beforeName: targetName };
+    }
+    const siblingRow = deckRow.nextElementSibling;
+    const nextName = siblingRow && siblingRow.dataset ? siblingRow.dataset.dragName : null;
+    return { containerName, beforeName: (nextName && !dragState.names.includes(nextName)) ? nextName : null };
+  }
+
+  const folderHeader = el.closest(".folder-header");
+  if (folderHeader) {
+    const folderName = folderHeader.closest(".folderItem").dataset.folder;
+    if (dragState.type === "folder") {
+      if (folderName === dragState.names[0]) return null;
+      return { beforeName: folderName };
+    }
+    return { containerName: folderName, beforeName: null }; // drop deck(s) into this folder
+  }
+
+  const folderContent = el.closest(".folder-content");
+  if (folderContent && dragState.type === "deck") {
+    return { containerName: folderContent.dataset.folderContent, beforeName: null };
+  }
+
+  if (el.closest("#deckList")) {
+    return dragState.type === "folder" ? { beforeName: null } : { containerName: null, beforeName: null };
+  }
+
+  return null;
+}
+
+function updateDropIndicator(x, y) {
+  if (lastDragOverEl) lastDragOverEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-inside");
+  lastDragOverEl = null;
+
+  const el = document.elementFromPoint(x, y);
+  if (!el) return;
+
+  const deckRow = el.closest(".deckItem");
+  const folderHeader = el.closest(".folder-header");
+  const folderContent = el.closest(".folder-content");
+
+  if (deckRow && !(dragState && dragState.names.includes(deckRow.dataset.dragName))) {
+    const rect = deckRow.getBoundingClientRect();
+    const before = y < rect.top + rect.height / 2;
+    deckRow.classList.add(before ? "drag-over-top" : "drag-over-bottom");
+    lastDragOverEl = deckRow;
+  } else if (folderHeader) {
+    folderHeader.classList.add("drag-over-inside");
+    lastDragOverEl = folderHeader;
+  } else if (folderContent) {
+    folderContent.classList.add("drag-over-inside");
+    lastDragOverEl = folderContent;
+  }
+}
+
+function clearDropIndicator() {
+  if (lastDragOverEl) lastDragOverEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-inside");
+  lastDragOverEl = null;
+}
+
+function applyDrop(type, names, drop) {
+  if (type === "folder") {
+    const idx = data.rootOrder.findIndex(e => e.type === "folder" && e.name === names[0]);
+    if (idx === -1) return;
+    const [item] = data.rootOrder.splice(idx, 1);
+    let insertAt = drop.beforeName != null
+      ? data.rootOrder.findIndex(e => e.name === drop.beforeName)
+      : data.rootOrder.length;
+    if (insertAt === -1) insertAt = data.rootOrder.length;
+    data.rootOrder.splice(insertAt, 0, item);
+    save();
+    renderDecks();
+    return;
+  }
+
+  // type === "deck": names is an ordered block of one or more deck names.
+  const destIsRoot = drop.containerName == null;
+
+  names.forEach(n => {
+    const deck = data.decks[n];
+    if (!deck) return;
+    if (deck.folder && data.folderOrder[deck.folder]) {
+      const i = data.folderOrder[deck.folder].indexOf(n);
+      if (i !== -1) data.folderOrder[deck.folder].splice(i, 1);
+    } else {
+      const i = data.rootOrder.findIndex(e => e.type === "deck" && e.name === n);
+      if (i !== -1) data.rootOrder.splice(i, 1);
+    }
+  });
+
+  const destArr = destIsRoot ? data.rootOrder : (data.folderOrder[drop.containerName] || (data.folderOrder[drop.containerName] = []));
+  let insertAt;
+  if (drop.beforeName != null) {
+    insertAt = destIsRoot ? destArr.findIndex(e => e.name === drop.beforeName) : destArr.indexOf(drop.beforeName);
+    if (insertAt === -1) insertAt = destArr.length;
+  } else {
+    insertAt = destArr.length;
+  }
+
+  names.forEach((n, i) => {
+    data.decks[n].folder = destIsRoot ? null : drop.containerName;
+    if (destIsRoot) destArr.splice(insertAt + i, 0, { type: "deck", name: n });
+    else destArr.splice(insertAt + i, 0, n);
+  });
+
+  save();
+  renderDecks();
+  renderCardList();
+}
+
 function addDeck() {
   const name = prompt("Deck name?");
   if (!name) return;
 
+  if (data.decks[name]) {
+    alert("A deck with that name already exists.");
+    return;
+  }
+
   data.decks[name] = {
     cards: [],
     mode: "sequential",
-    done: false
+    done: false,
+    folder: null
   };
+  data.rootOrder.push({ type: "deck", name });
+
+  save();
+  renderDecks();
+}
+
+function addFolder() {
+  const name = prompt("Folder name?");
+  if (!name) return;
+
+  if (data.folders[name]) {
+    alert("A folder with that name already exists.");
+    return;
+  }
+
+  data.folders[name] = { expanded: true };
+  data.folderOrder[name] = [];
+  data.rootOrder.push({ type: "folder", name });
+
+  save();
+  renderDecks();
+}
+
+// Deletes a folder but keeps its decks — they're moved back out to the top
+// level rather than being deleted, since losing cards to a mis-tap on a
+// folder icon would be much worse than losing an empty folder by mistake.
+function deleteFolder(name) {
+  if (!data.folders[name]) return;
+  const deckNames = data.folderOrder[name] || [];
+
+  if (!confirm(`Delete folder "${name}"? Its ${deckNames.length} deck(s) will be moved to the top level (not deleted).`)) {
+    return;
+  }
+
+  deckNames.forEach(n => {
+    if (data.decks[n]) {
+      data.decks[n].folder = null;
+      data.rootOrder.push({ type: "deck", name: n });
+    }
+  });
+
+  delete data.folders[name];
+  delete data.folderOrder[name];
+  data.rootOrder = data.rootOrder.filter(e => !(e.type === "folder" && e.name === name));
 
   save();
   renderDecks();
@@ -1369,6 +2167,17 @@ function confirmDeleteDeck() {
   }
 
   const wasCurrentDeck = deckPendingDelete === currentDeck;
+  const deckBeingDeleted = data.decks[deckPendingDelete];
+
+  if (deckBeingDeleted && deckBeingDeleted.folder && data.folderOrder[deckBeingDeleted.folder]) {
+    const i = data.folderOrder[deckBeingDeleted.folder].indexOf(deckPendingDelete);
+    if (i !== -1) data.folderOrder[deckBeingDeleted.folder].splice(i, 1);
+  } else {
+    data.rootOrder = data.rootOrder.filter(e => !(e.type === "deck" && e.name === deckPendingDelete));
+  }
+  selectedDecks.delete(deckPendingDelete);
+  if (multiStudyDecks) multiStudyDecks = multiStudyDecks.filter(n => n !== deckPendingDelete);
+
   delete data.decks[deckPendingDelete];
   clearSessionFor(deckPendingDelete);
 
@@ -1409,14 +2218,28 @@ function toggleDeckDone() {
 }
 
 function markDone(){
+  if (multiSelectMode && selectedDecks.size > 0) {
+    const anyNotDone = Array.from(selectedDecks).some(n => data.decks[n] && !data.decks[n].done);
+    selectedDecks.forEach(n => { if (data.decks[n]) data.decks[n].done = anyNotDone; });
+    save();
+    renderDecks();
+    return;
+  }
   toggleDeckDone();
 }
 
+// Also used by the bottom-bar "Mark Done" button shown on deck-complete,
+// which needs to mark ALL decks in an active multi-study session done.
 function markDeckDone() {
-  const isDone = toggleDeckDone();
-  if (isDone === undefined) return;
+  const targets = inMultiStudy && multiStudyDecks ? multiStudyDecks : (currentDeck ? [currentDeck] : []);
+  if (targets.length === 0) return;
 
-  if (isDone) {
+  const anyNotDone = targets.some(n => data.decks[n] && !data.decks[n].done);
+  targets.forEach(n => { if (data.decks[n]) data.decks[n].done = anyNotDone; });
+  save();
+  renderDecks();
+
+  if (anyNotDone) {
     markDoneBtn.innerText = "Done! ✔";
     markDoneBtn.style.opacity = "0.7";
   } else {
@@ -1431,6 +2254,22 @@ function markDeckDone() {
 }
 
 function toggleMode(){
+  if (multiSelectMode && selectedDecks.size > 1) {
+    // With multiple decks selected, Shuffle now controls whether "Study
+    // Selected" mixes cards from all of them together, rather than any
+    // single deck's own mode.
+    multiShuffleTogether = !multiShuffleTogether;
+    updateMultiSelectUI();
+    return;
+  }
+  if (multiSelectMode && selectedDecks.size === 1) {
+    const only = Array.from(selectedDecks)[0];
+    const deck = data.decks[only];
+    deck.mode = deck.mode === "shuffle" ? "sequential" : "shuffle";
+    save();
+    updateShuffleStatus();
+    return;
+  }
   if(!currentDeck) return;
   const deck=data.decks[currentDeck];
   deck.mode = deck.mode==="shuffle" ? "sequential":"shuffle";
@@ -1462,7 +2301,9 @@ function toggleInputMode() {
   updateDrawingModeClass();
   saveSession(); // persist the new mode even if no deck is selected yet
 
-  if (currentDeck) {
+  if (inMultiStudy) {
+    startMultiStudy(multiStudyDecks, multiShuffleTogether, false); // fresh pass, new mode
+  } else if (currentDeck) {
     startSession(false);   // force a fresh pass in the current deck with the new mode
   }
 }
@@ -1481,7 +2322,9 @@ function toggleShowBoth() {
   const status = document.getElementById("showBothStatus");
   if (status) status.textContent = showBothMode ? "ON" : "OFF";
 
-  if (currentDeck) {
+  if (inMultiStudy) {
+    startMultiStudy(multiStudyDecks, multiShuffleTogether, false); // fresh pass, new mode
+  } else if (currentDeck) {
     startSession(false);   // force a fresh pass under the new mode
   }
 }
@@ -1515,19 +2358,52 @@ function toggleTheme() {
 }
 
 function restartDeck(){
+  if (multiSelectMode && selectedDecks.size > 0) {
+    const names = Array.from(selectedDecks);
+    names.forEach(n => clearSessionFor(n));
+
+    // If the selection exactly matches an in-progress multi-study session,
+    // restart that session fresh right away rather than just clearing its
+    // resume point for "next time".
+    if (inMultiStudy && multiStudyDecks &&
+        multiStudyDecks.length === names.length && multiStudyDecks.every(n => selectedDecks.has(n))) {
+      startMultiStudy(names, multiShuffleTogether, false);
+    }
+
+    saveSession();
+    alert(`Cleared saved progress for ${names.length} deck(s). They'll start fresh next time you study them.`);
+    return;
+  }
   startSession(false); // explicit reset — ignore/overwrite any saved resume point
 }
 
 // Keeps the "Adding to: X" / "Editing: X" labels above the Add Card and
 // Edit Cards forms in sync with currentDeck, now that those controls live
-// in the Add/Edit section instead of right next to the deck list.
+// in the Add/Edit section instead of right next to the deck list. Also
+// keeps the Add/Edit form's disabled state in sync, since both depend on
+// whether a single, unambiguous deck is currently selected.
 function updateContextLabels() {
-  const label = currentDeck || "No deck selected";
+  const label = inMultiStudy && multiStudyDecks
+    ? `${multiStudyDecks.length} decks (studying together)`
+    : (currentDeck || "No deck selected");
   const addLabel = document.getElementById("addCardDeckName");
   const editLabel = document.getElementById("editCardsDeckName");
   if (addLabel) addLabel.textContent = label;
   if (editLabel) editLabel.textContent = label;
   updateShuffleStatus();
+  updateAddEditAvailability();
+}
+
+// Add Card / Edit Cards only make sense against one unambiguous deck, so
+// they're disabled while multi-select is on or a multi-deck study session
+// is active (per-card position also stops being meaningful across decks —
+// handled separately in updateCardCounter()).
+function updateAddEditAvailability() {
+  const disabled = multiSelectMode || inMultiStudy;
+  const formArea = document.getElementById("addEditFormArea");
+  const note = document.getElementById("addEditDisabledNote");
+  if (formArea) formArea.classList.toggle("disabled", disabled);
+  if (note) note.style.display = disabled ? "block" : "none";
 }
 
 // Builds a plain [0, 1, 2, ...] index array for a deck's cards — the
@@ -1645,6 +2521,29 @@ function restoreCardDisplay() {
 }
 
 function handleShow(){
+  if (inMultiStudy) {
+    if (multiQueue.length === 0) {
+      cardEl.innerText = "No cards.";
+      return;
+    }
+    if (showBothMode) {
+      if (multiFirstShow) {
+        showMultiQuestion();
+        multiFirstShow = false;
+      } else {
+        advanceMulti();
+      }
+      return;
+    }
+    if (multiFirstShow) {
+      showMultiQuestion();
+      multiFirstShow = false;
+    } else if (!multiShowingAnswer) {
+      showMultiAnswer();
+    }
+    return;
+  }
+
   if(!currentDeck) return;
   if(sessionQueue.length===0){
     cardEl.innerText="No cards.";
@@ -1791,6 +2690,8 @@ function showDeckComplete() {
 }
 
 function grade(correct) {
+  if (inMultiStudy) { gradeMulti(correct); return; }
+
   const cardIndex = sessionQueue[sessionIndex];
   if (!correct) {
     repeatQueue.push(cardIndex); // Add incorrect cards' indices to repeatQueue
@@ -1845,6 +2746,254 @@ function advanceCard() {
     }
   } else {
     showQuestion();
+  }
+
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+// ---------------------------------------------------------------------
+// Multi-deck study — studying several decks (checked via multi-select) as
+// one combined pass. Mirrors the single-deck study functions above, but
+// operates on multiQueue/multiIndex/multiRepeatQueue (arrays of {deck,idx}
+// refs into data.decks) instead of currentDeck + sessionQueue, since a
+// single deck's index alone isn't enough once cards from several decks
+// are mixed together.
+// ---------------------------------------------------------------------
+
+// Builds the combined study queue for a set of decks: each deck's cards in
+// its own order, one deck after another. If shuffleAcross is true, the
+// WHOLE combined list is shuffled together afterward (a single Fisher–
+// Yates pass over every card from every selected deck) so the decks are
+// genuinely mixed rather than just shown one deck at a time.
+function buildQueue(deckNames, shuffleAcross) {
+  let queue = [];
+  deckNames.forEach(name => {
+    const deck = data.decks[name];
+    if (!deck) return;
+    deck.cards.forEach((_, idx) => queue.push({ deck: name, idx }));
+  });
+  if (shuffleAcross) queue = shuffle(queue);
+  return queue;
+}
+
+function startMultiStudy(deckNames, shuffleTogether, resumeIfAvailable = true) {
+  const validNames = deckNames.filter(n => data.decks[n]);
+  if (validNames.length < 2) {
+    if (validNames.length === 1) selectDeckAndStudy(validNames[0]);
+    return;
+  }
+
+  inMultiStudy = true;
+  currentDeck = null;
+  multiStudyDecks = validNames;
+
+  const saved = resumeIfAvailable ? sessionState.activeMultiStudy : null;
+  const sameSet = saved && Array.isArray(saved.decks) &&
+    saved.decks.length === validNames.length && saved.decks.every(n => validNames.includes(n));
+
+  if (sameSet && isValidMultiSaved(saved)) {
+    multiQueue = saved.queue.slice();
+    multiRepeatQueue = saved.repeat.slice();
+    multiIndex = saved.index;
+    multiShowingAnswer = !!saved.showingAnswer;
+    multiFirstShow = !!saved.firstShow;
+  } else {
+    multiQueue = buildQueue(validNames, shuffleTogether);
+    multiIndex = 0;
+    multiRepeatQueue = [];
+    multiShowingAnswer = false;
+    multiFirstShow = true;
+  }
+
+  markDoneBtn.innerText = "Mark Done ✔";
+  markDoneBtn.style.opacity = "1";
+  userAnswerArea.style.display = "none";
+  drawBoxContainer.style.display = "none";
+  updateDrawingModeClass();
+
+  restoreMultiCardDisplay();
+
+  renderDecks();
+  renderCardList();
+  updateBackButton();
+  updateCardCounter();
+  updateContextLabels();
+  saveSession();
+}
+
+function restoreMultiCardDisplay() {
+  if (multiFirstShow) {
+    showBtn.innerText = "Show Question";
+    showBtn.onclick = handleShow;
+    showBtn.style.display = "block";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "none";
+    cardEl.innerText = 'Tap “Show Question” to begin';
+    return;
+  }
+
+  if (multiIndex >= multiQueue.length) {
+    cardEl.innerHTML = '<strong>Selected Decks Complete!</strong><br><br>';
+    showBtn.innerText = "Restart";
+    showBtn.onclick = () => startMultiStudy(multiStudyDecks, multiShuffleTogether, false);
+    showBtn.style.display = "block";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "block";
+    return;
+  }
+
+  markDoneBtn.style.display = "none";
+  showBtn.onclick = handleShow;
+
+  if (showBothMode) {
+    showMultiQuestion();
+    return;
+  }
+
+  if (multiShowingAnswer) showMultiAnswer(); else showMultiQuestion();
+}
+
+function showMultiQuestion() {
+  const ref = multiQueue[multiIndex];
+  const card = data.decks[ref.deck].cards[ref.idx];
+
+  if (showBothMode) {
+    multiShowingAnswer = true;
+
+    cardEl.innerHTML =
+      '<div class="inner">' +
+        '<div class="qa-question">' + nl2br(card.q) + '</div>' +
+        (card.img ? '<img src="' + card.img + '">' : "") +
+        '<hr class="qa-divider">' +
+        '<div class="qa-answer-label">Answer</div>' +
+        '<div class="qa-answer">' + nl2br(card.a) + '</div>' +
+      '</div>';
+
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "none";
+
+    showBtn.innerText = "Next";
+    showBtn.style.display = "block";
+    showBtn.onclick = handleShow;
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "none";
+
+    updateBackButton();
+    updateCardCounter();
+    saveSession();
+    return;
+  }
+
+  multiShowingAnswer = false;
+
+  cardEl.innerHTML =
+    '<div class="inner">' + nl2br(card.q) + '</div>' +
+    (card.img ? '<br><img src="' + card.img + '">' : "");
+
+  if (userInputMode === "text") {
+    userAnswerArea.style.display = "block";
+    userAnswerArea.value = "";
+    drawBoxContainer.style.display = "none";
+  } else if (userInputMode === "draw") {
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "flex";
+    sizeDrawCanvas();
+  } else {
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "none";
+  }
+
+  showBtn.innerText = "Show Answer";
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+function showMultiAnswer() {
+  const ref = multiQueue[multiIndex];
+  const card = data.decks[ref.deck].cards[ref.idx];
+
+  if (userInputMode === "text" || userInputMode === "draw") {
+    cardEl.innerHTML = nl2br(card.a);
+  } else {
+    cardEl.innerHTML =
+      '<div class="inner">' + nl2br(card.a) + '</div>' +
+      (card.img ? '<br><img src="' + card.img + '">' : "");
+  }
+
+  showBtn.style.display = "none";
+  correctBtn.style.display = "block";
+  incorrectBtn.style.display = "block";
+  multiShowingAnswer = true;
+  updateBackButton();
+  saveSession();
+}
+
+function showMultiComplete() {
+  cardEl.innerHTML = '<strong>Selected Decks Complete!</strong><br><br>';
+  showBtn.innerText = "Restart";
+  showBtn.onclick = () => startMultiStudy(multiStudyDecks, multiShuffleTogether, false);
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  showBtn.style.display = "block";
+  markDoneBtn.style.display = "block";
+  saveSession();
+}
+
+function gradeMulti(correct) {
+  const ref = multiQueue[multiIndex];
+  if (!correct) multiRepeatQueue.push(ref);
+
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  showBtn.style.display = "block";
+  showBtn.innerText = "Show Answer";
+
+  multiIndex++;
+
+  if (multiIndex >= multiQueue.length) {
+    if (multiRepeatQueue.length > 0) {
+      multiQueue = multiRepeatQueue;
+      multiRepeatQueue = [];
+      multiIndex = 0;
+      showMultiQuestion();
+    } else {
+      showMultiComplete();
+      return;
+    }
+  } else {
+    showMultiQuestion();
+  }
+
+  multiShowingAnswer = false;
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+// "Next" in Show Q&A Together mode for a multi-deck session — advances
+// like gradeMulti() but never touches multiRepeatQueue, since there's
+// nothing to grade.
+function advanceMulti() {
+  multiIndex++;
+
+  if (multiIndex >= multiQueue.length) {
+    if (multiRepeatQueue.length > 0) {
+      multiQueue = multiRepeatQueue;
+      multiRepeatQueue = [];
+      multiIndex = 0;
+      showMultiQuestion();
+    } else {
+      showMultiComplete();
+      return;
+    }
+  } else {
+    showMultiQuestion();
   }
 
   updateBackButton();
@@ -2035,9 +3184,12 @@ function exportCurrentDeck() {
 
 function exportAllDecks() {
   const backup = {
-    version: "1.0",
+    version: "2.0",
     exportedDate: new Date().toISOString(),
-    decks: data.decks
+    decks: data.decks,
+    folders: data.folders,
+    folderOrder: data.folderOrder,
+    rootOrder: data.rootOrder
   };
 
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
@@ -2088,7 +3240,8 @@ function restoreFromBackup() {
                 data.decks[deckName] = {
                   cards: incoming.cards,
                   mode: incoming.mode === "shuffle" ? "shuffle" : "sequential",
-                  done: !!incoming.done
+                  done: !!incoming.done,
+                  folder: typeof incoming.folder === "string" ? incoming.folder : null
                 };
                 restoredCount++;
               } else {
@@ -2096,6 +3249,23 @@ function restoreFromBackup() {
                 console.warn(`Skipped deck "${deckName}" in ${file.name}: missing/invalid cards array`);
               }
             });
+
+            // Folder structure is optional (older backups won't have it).
+            // Anything not fully accounted for here is fixed up afterward
+            // by reconcileOrder(), so a partial/foreign folder set is safe
+            // to merge in as-is rather than needing to be perfectly valid.
+            if (backupData.folders && typeof backupData.folders === "object") {
+              Object.keys(backupData.folders).forEach(fName => {
+                data.folders[fName] = { expanded: !!(backupData.folders[fName] && backupData.folders[fName].expanded) };
+              });
+            }
+            if (backupData.folderOrder && typeof backupData.folderOrder === "object") {
+              Object.keys(backupData.folderOrder).forEach(fName => {
+                if (data.folders[fName] && Array.isArray(backupData.folderOrder[fName])) {
+                  data.folderOrder[fName] = backupData.folderOrder[fName].slice();
+                }
+              });
+            }
           } else {
             skipped++;
             console.warn(`Invalid backup file format: ${file.name}`);
@@ -2428,13 +3598,14 @@ window.addEventListener("pagehide", saveSession);
 // ---------------------------------------------------------------------
 
 function openGoToCardModal() {
-  if (!currentDeck || sessionQueue.length === 0) return;
+  const queueLen = inMultiStudy ? multiQueue.length : sessionQueue.length;
+  if ((!currentDeck && !inMultiStudy) || queueLen === 0) return;
 
-  document.getElementById("goToCardMax").textContent = sessionQueue.length;
+  document.getElementById("goToCardMax").textContent = queueLen;
   const input = document.getElementById("goToCardInput");
   input.min = "1";
-  input.max = String(sessionQueue.length);
-  input.value = String(sessionIndex + 1);
+  input.max = String(queueLen);
+  input.value = String((inMultiStudy ? multiIndex : sessionIndex) + 1);
 
   document.getElementById("goToCardModal").classList.add("open");
   input.focus();
@@ -2446,19 +3617,27 @@ function closeGoToCardModal() {
 }
 
 function confirmGoToCard() {
+  const queueLen = inMultiStudy ? multiQueue.length : sessionQueue.length;
   const input = document.getElementById("goToCardInput");
   const num = parseInt(input.value, 10);
 
-  if (!num || num < 1 || num > sessionQueue.length) {
-    alert(`Please enter a number between 1 and ${sessionQueue.length}.`);
+  if (!num || num < 1 || num > queueLen) {
+    alert(`Please enter a number between 1 and ${queueLen}.`);
     return;
   }
 
-  sessionIndex = num - 1;
-  showingAnswer = false;
-  firstShow = false;   // we're jumping straight to a question, not the "first tap" state
+  if (inMultiStudy) {
+    multiIndex = num - 1;
+    multiShowingAnswer = false;
+    multiFirstShow = false;
+    showMultiQuestion();
+  } else {
+    sessionIndex = num - 1;
+    showingAnswer = false;
+    firstShow = false;   // we're jumping straight to a question, not the "first tap" state
+    showQuestion();
+  }
 
-  showQuestion();
   showBtn.style.display = "block";
   showBtn.innerText = "Show Answer";
   showBtn.onclick = handleShow;
@@ -2490,13 +3669,16 @@ userInputMode = sessionState.userInputMode;
 document.getElementById("inputModeStatus").textContent = INPUT_MODE_LABELS[userInputMode];
 updateDrawingModeClass();
 
-if (sessionState.currentDeck && data.decks[sessionState.currentDeck]) {
+if (sessionState.lastMode === "multi" && isValidMultiSaved(sessionState.activeMultiStudy)) {
+  // Resume an in-progress multi-deck study session exactly where it left off.
+  startMultiStudy(sessionState.activeMultiStudy.decks, false, true);
+} else if (sessionState.currentDeck && data.decks[sessionState.currentDeck]) {
   // Resume exactly where the learner left off, including any deck other
   // than the first one and any in-progress repeat queue.
   currentDeck = sessionState.currentDeck;
   startSession(true);
-} else if (Object.keys(data.decks).length > 0) {
-  currentDeck = Object.keys(data.decks)[0];  // no saved session — auto-select first deck
+} else if (flattenDeckOrder().length > 0) {
+  currentDeck = flattenDeckOrder()[0];  // no saved session — auto-select first deck in display order
   startSession(true);
 } else {
   updateContextLabels();

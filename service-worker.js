@@ -1,12 +1,12 @@
 //service-worker.js Flashcard app
-//Version 1.8
+//Version 1.9
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     new "Show Q&A Together" Settings option (a display mode that shows
-//     the question and answer together with a single Next button instead
-//     of the graded Correct/Incorrect flow) gets picked up by clients on
-//     their next "Check for Update" or fresh install.
+//     deck-management overhaul (folders, drag-and-drop reordering,
+//     multi-select with batch Mark Done/Restart, and combined multi-deck
+//     study with cross-deck shuffle) gets picked up by clients on their
+//     next "Check for Update" or fresh install.
 
-const CACHE = "study-cards-v1.8";
+const CACHE = "study-cards-v1.9";
 
 const CORE_ASSETS = [
   "./",
