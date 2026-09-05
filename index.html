@@ -1,43 +1,37 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.9, SOC: Deck management overhaul.
-     (1) FOLDERS: decks can now be organized into folders (data.folders /
-     data.folderOrder / data.rootOrder — see reconcileOrder(), which keeps
-     these in sync with data.decks and is safe to call repeatedly). Each
-     folder is collapsible and defaults to collapsed unless the user
-     expanded it (persisted per-folder) or it currently contains the
-     active deck/multi-study session (computed at render time, not
-     persisted).
-     (2) DRAG-AND-DROP: a small handle on every deck/folder row drives a
-     custom Pointer-Events-based drag (startDrag/onDragMove/onDragEnd/
-     computeDropTarget/applyDrop) — chosen over native HTML5 drag-and-drop
-     because that doesn't work reliably on touch. Supports reordering
-     decks and folders, and moving decks in/out of folders.
-     (3) MULTI-SELECT: a "Select Decks" toggle in the Decks menu adds
-     checkboxes; the existing Mark Done / Restart Deck / Shuffle buttons
-     are repurposed to act on the whole selection when one or more decks
-     are checked (see markDone/restartDeck/toggleMode), and dragging a
-     selected deck while others are also selected moves the whole
-     selection together as one block (orderedSelectedDecks()). A new
-     "Study Selected" button studies 1 deck normally or several at once
-     via the new multi-deck study engine (multiQueue/multiIndex/
-     multiRepeatQueue + startMultiStudy/showMultiQuestion/showMultiAnswer/
-     gradeMulti/advanceMulti — parallel implementations of the existing
-     single-deck study functions, since a lone card index isn't enough
-     once cards from multiple decks are mixed together). Toggling Shuffle
-     with 2+ decks selected now controls whether "Study Selected" mixes
-     every selected deck's cards together in one shuffle (buildQueue) —
-     previously shuffle only ever reordered a single deck's own cards, so
-     multi-deck study always went one deck at a time regardless of mode.
-     A multi-deck session's own progress is now also persisted and resumed
-     across backgrounding/reload (sessionState.activeMultiStudy /
-     lastMode), the same way per-deck sessions already were.
-     (4) Add Card / Edit Cards and the per-card position hint in the card
-     counter only make sense against one unambiguous deck, so both are
-     disabled while multi-select is on or a multi-deck study is active
-     (updateAddEditAvailability()); the counter shows the current card's
-     source deck name instead during multi-study, which is more useful
-     than a raw position once decks are shuffled together anyway.
-     Full JSON backups now also include the folder structure.
+<!-- Version 1.10, SOC: Drag-and-drop refinements + Decks menu cleanup.
+     (1) SAME-POSITION BUG: dropping a deck onto the bottom half of the
+     deck directly above it used to send it to the end of the list,
+     because that target's very next DOM sibling was the dragged deck
+     itself. nextSiblingName() now walks past any siblings that are part
+     of the dragged group when looking for "what comes after", so this
+     resolves back to the deck's original spot instead.
+     (2) FOLDER DIRECTION BUG: dragging a folder onto another folder used
+     to always insert BEFORE the target regardless of drop position,
+     making it impossible to drag a folder to the bottom. computeDragTarget
+     (replacing computeDropTarget) now checks which half of the target
+     folder's header the pointer is over, exactly like deck-to-deck
+     reordering already did.
+     (3) MIXED REORDERING: folders and decks can now be reordered relative
+     to each other at the root level — a folder can be dragged past a
+     root-level deck (and vice versa) instead of being blocked outright.
+     Dragging a folder onto something inside another folder's content
+     redirects to "just before/after that containing folder"
+     (folderRelativeToFolder()), since folders never nest.
+     (4) DROP-INTO vs REORDER on folder headers: hovering a folder's
+     header is now split into thirds — top/bottom thirds reorder the
+     dragged deck(s) as a root-level sibling just before/after the folder
+     (using the same green line indicator as deck-to-deck reordering, via
+     shared .drag-over-top/.drag-over-bottom CSS), while the middle third
+     drops them INTO the folder (dashed outline, unchanged). This also
+     finally lets a deck be dragged past a folder without always ending up
+     inside it. getRowUnderPoint()/computeDragTarget() are now the single
+     source of truth for both the live indicator (on pointermove) and the
+     actual drop (on release), so what's shown always matches what happens.
+     (5) Decks menu: "Select Decks" moved to after Shuffle and renamed to
+     "Select" so it and Mark Done/Restart Deck/Shuffle read as one
+     consistent row of four buttons with uniform spacing (the "N selected"
+     label moved below them so it no longer interrupts that spacing).
       -->
 <!DOCTYPE html>
 <html>
@@ -892,11 +886,13 @@ body.dragging-active {
   cursor: grabbing;
 }
 
-.deckItem.drag-over-top {
+.deckItem.drag-over-top,
+.folder-header.drag-over-top {
   box-shadow: inset 0 3px 0 0 #8bc34a;
 }
 
-.deckItem.drag-over-bottom {
+.deckItem.drag-over-bottom,
+.folder-header.drag-over-bottom {
   box-shadow: inset 0 -3px 0 0 #8bc34a;
 }
 
@@ -945,12 +941,12 @@ body.dragging-active {
     <div class="menu-section-content">
       <div id="deckList"></div>
 
-      <button onclick="toggleMultiSelect()">Select Decks: <span id="multiSelectStatus">OFF</span></button>
-      <p class="deck-context-label" id="multiSelectCount">0 selected</p>
-
       <button onclick="markDone()" id="markDoneMenuBtn">Mark Done ✔</button>
       <button onclick="restartDeck()" id="restartDeckMenuBtn">Restart Deck</button>
       <button onclick="toggleMode()" id="shuffleMenuBtn">Shuffle: <span id="shuffleModeStatus">–</span></button>
+      <button onclick="toggleMultiSelect()">Select: <span id="multiSelectStatus">OFF</span></button>
+
+      <p class="deck-context-label" id="multiSelectCount">0 selected</p>
       <button onclick="studySelected()" id="studySelectedBtn" style="display:none; background:#1e8e3e; color:white;">Study Selected</button>
     </div>
   </div>
@@ -1163,7 +1159,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.9";
+const APP_VERSION = "1.10";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -1621,6 +1617,8 @@ function renderFolderRow(folderName) {
   const wrap = document.createElement("div");
   wrap.className = "folderItem" + (isOpen ? " open" : "") + (containsActive ? " contains-active" : "");
   wrap.dataset.folder = folderName;
+  wrap.dataset.dragType = "folder";
+  wrap.dataset.dragName = folderName;
 
   const header = document.createElement("div");
   header.className = "folder-header";
@@ -1896,12 +1894,12 @@ function startDrag(e, type, name) {
 function onDragMove(e) {
   if (!dragState) return;
   dragState.ghost.style.top = (e.clientY - dragState.offsetY) + "px";
-  updateDropIndicator(e.clientX, e.clientY);
+  updateDropIndicator(computeDragTarget(e.clientX, e.clientY));
 }
 
 function onDragEnd(e) {
   if (!dragState) return;
-  const drop = computeDropTarget(e.clientX, e.clientY);
+  const target = computeDragTarget(e.clientX, e.clientY);
   clearDropIndicator();
   dragState.ghost.remove();
 
@@ -1913,79 +1911,155 @@ function onDragEnd(e) {
   const finishedState = dragState;
   dragState = null;
 
-  if (drop) applyDrop(finishedState.type, finishedState.names, drop);
+  if (target && target.drop) applyDrop(finishedState.type, finishedState.names, target.drop);
 }
 
-// Figures out what's under the pointer and translates it into a structured
-// drop target: { containerName: folderName|null, beforeName: name|null }
-// for decks (containerName null = root level), or { beforeName } for
-// reordering a folder among its root-level siblings.
-function computeDropTarget(x, y) {
+// Escapes a value for safe use inside a double-quoted attribute selector
+// (e.g. querySelector(`[data-folder="${escapeAttr(name)}"]`)).
+function escapeAttr(v) {
+  return String(v).replace(/["\\]/g, "\\$&");
+}
+
+// Finds the name of whatever row comes right after rowEl among its own
+// siblings (root-level siblings for a root deck/folder, or siblings within
+// the same folder's content for a nested deck), skipping over any rows
+// that are themselves part of the dragged group. This is what makes
+// "drop right after the row that's already directly above the dragged
+// item" resolve back to the item's original position instead of the end
+// of the whole list — without the skip, the very next sibling would often
+// be the dragged row itself.
+function nextSiblingName(rowEl, excludeNames) {
+  let sib = rowEl.nextElementSibling;
+  while (sib && sib.dataset && excludeNames.includes(sib.dataset.dragName)) {
+    sib = sib.nextElementSibling;
+  }
+  return sib && sib.dataset && sib.dataset.dragName ? sib.dataset.dragName : null;
+}
+
+// Identifies whatever's directly under the pointer and classifies it as
+// one of: a deck row, a folder row (its header), the empty content area
+// of an open folder, or the empty background of the deck list itself.
+function getRowUnderPoint(x, y) {
   const el = document.elementFromPoint(x, y);
-  if (!el || !dragState) return null;
+  if (!el) return null;
 
   const deckRow = el.closest(".deckItem");
   if (deckRow) {
-    const targetName = deckRow.dataset.dragName;
-    if (dragState.type === "folder" || dragState.names.includes(targetName)) return null;
-
-    const rect = deckRow.getBoundingClientRect();
-    const before = y < rect.top + rect.height / 2;
     const folderContentParent = deckRow.closest(".folder-content");
-    const containerName = folderContentParent ? folderContentParent.dataset.folderContent : null;
-
-    if (before) {
-      return { containerName, beforeName: targetName };
-    }
-    const siblingRow = deckRow.nextElementSibling;
-    const nextName = siblingRow && siblingRow.dataset ? siblingRow.dataset.dragName : null;
-    return { containerName, beforeName: (nextName && !dragState.names.includes(nextName)) ? nextName : null };
+    return {
+      kind: "deck",
+      el: deckRow,
+      name: deckRow.dataset.dragName,
+      containerName: folderContentParent ? folderContentParent.dataset.folderContent : null
+    };
   }
 
   const folderHeader = el.closest(".folder-header");
   if (folderHeader) {
-    const folderName = folderHeader.closest(".folderItem").dataset.folder;
-    if (dragState.type === "folder") {
-      if (folderName === dragState.names[0]) return null;
-      return { beforeName: folderName };
-    }
-    return { containerName: folderName, beforeName: null }; // drop deck(s) into this folder
+    const folderItemEl = folderHeader.closest(".folderItem");
+    return { kind: "folder", el: folderItemEl, headerEl: folderHeader, name: folderItemEl.dataset.folder };
   }
 
   const folderContent = el.closest(".folder-content");
-  if (folderContent && dragState.type === "deck") {
-    return { containerName: folderContent.dataset.folderContent, beforeName: null };
+  if (folderContent) {
+    return { kind: "folder-gap", name: folderContent.dataset.folderContent, el: folderContent };
   }
 
   if (el.closest("#deckList")) {
-    return dragState.type === "folder" ? { beforeName: null } : { containerName: null, beforeName: null };
+    return { kind: "root-gap" };
   }
 
   return null;
 }
 
-function updateDropIndicator(x, y) {
+// When a dragged FOLDER is hovering something that lives inside another
+// folder's content (a deck row, or that folder's empty space) there's no
+// meaningful "inside" — folders only ever live at the root — so this
+// redirects the target to "just before/after the containing folder"
+// based on the pointer's position relative to that folder's own header.
+function folderRelativeToFolder(containingFolderName, y) {
+  const folderItemEl = document.querySelector(`.folderItem[data-folder="${escapeAttr(containingFolderName)}"]`);
+  if (!folderItemEl) return null;
+  const headerEl = folderItemEl.querySelector(":scope > .folder-header");
+  if (!headerEl) return null;
+  const rect = headerEl.getBoundingClientRect();
+  const before = y < rect.top + rect.height / 2;
+  return before
+    ? { drop: { beforeName: containingFolderName }, indicatorEl: headerEl, indicatorClass: "drag-over-top" }
+    : { drop: { beforeName: nextSiblingName(folderItemEl, dragState.names) }, indicatorEl: headerEl, indicatorClass: "drag-over-bottom" };
+}
+
+// The single source of truth for both the live drop-indicator line/outline
+// (called on every pointermove) and the actual drop applied on release —
+// computing both from the same logic keeps what the learner sees in sync
+// with what actually happens.
+function computeDragTarget(x, y) {
+  if (!dragState) return null;
+  const row = getRowUnderPoint(x, y);
+  if (!row) return null;
+
+  if (row.kind === "deck") {
+    if (dragState.names.includes(row.name)) return null; // hovering the dragged item itself
+
+    const rect = row.el.getBoundingClientRect();
+    const before = y < rect.top + rect.height / 2;
+
+    if (dragState.type === "folder") {
+      // A folder can only ever reorder among root-level siblings. If this
+      // deck lives inside a folder, treat it as "relative to that folder".
+      if (row.containerName) return folderRelativeToFolder(row.containerName, y);
+      return before
+        ? { drop: { beforeName: row.name }, indicatorEl: row.el, indicatorClass: "drag-over-top" }
+        : { drop: { beforeName: nextSiblingName(row.el, dragState.names) }, indicatorEl: row.el, indicatorClass: "drag-over-bottom" };
+    }
+
+    return before
+      ? { drop: { containerName: row.containerName, beforeName: row.name }, indicatorEl: row.el, indicatorClass: "drag-over-top" }
+      : { drop: { containerName: row.containerName, beforeName: nextSiblingName(row.el, dragState.names) }, indicatorEl: row.el, indicatorClass: "drag-over-bottom" };
+  }
+
+  if (row.kind === "folder") {
+    if (dragState.type === "folder") {
+      if (row.name === dragState.names[0]) return null; // hovering itself
+      const rect = row.headerEl.getBoundingClientRect();
+      const before = y < rect.top + rect.height / 2;
+      return before
+        ? { drop: { beforeName: row.name }, indicatorEl: row.headerEl, indicatorClass: "drag-over-top" }
+        : { drop: { beforeName: nextSiblingName(row.el, dragState.names) }, indicatorEl: row.headerEl, indicatorClass: "drag-over-bottom" };
+    }
+
+    // Dragging deck(s) over a folder's header: split it into thirds so the
+    // learner can choose to drop INTO the folder (middle, dashed outline)
+    // or reorder as a root-level sibling just before/after it (top/bottom
+    // thirds, same line indicator used for deck-to-deck reordering).
+    const rect = row.headerEl.getBoundingClientRect();
+    const rel = (y - rect.top) / rect.height;
+    if (rel < 0.3) {
+      return { drop: { containerName: null, beforeName: row.name }, indicatorEl: row.headerEl, indicatorClass: "drag-over-top" };
+    }
+    if (rel > 0.7) {
+      return { drop: { containerName: null, beforeName: nextSiblingName(row.el, dragState.names) }, indicatorEl: row.headerEl, indicatorClass: "drag-over-bottom" };
+    }
+    return { drop: { containerName: row.name, beforeName: null }, indicatorEl: row.headerEl, indicatorClass: "drag-over-inside" };
+  }
+
+  if (row.kind === "folder-gap") {
+    if (dragState.type === "folder") return folderRelativeToFolder(row.name, y);
+    return { drop: { containerName: row.name, beforeName: null }, indicatorEl: row.el, indicatorClass: "drag-over-inside" };
+  }
+
+  // root-gap: empty background of the deck list itself → append at the end.
+  if (dragState.type === "folder") return { drop: { beforeName: null }, indicatorEl: null, indicatorClass: null };
+  return { drop: { containerName: null, beforeName: null }, indicatorEl: null, indicatorClass: null };
+}
+
+function updateDropIndicator(target) {
   if (lastDragOverEl) lastDragOverEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-inside");
   lastDragOverEl = null;
 
-  const el = document.elementFromPoint(x, y);
-  if (!el) return;
-
-  const deckRow = el.closest(".deckItem");
-  const folderHeader = el.closest(".folder-header");
-  const folderContent = el.closest(".folder-content");
-
-  if (deckRow && !(dragState && dragState.names.includes(deckRow.dataset.dragName))) {
-    const rect = deckRow.getBoundingClientRect();
-    const before = y < rect.top + rect.height / 2;
-    deckRow.classList.add(before ? "drag-over-top" : "drag-over-bottom");
-    lastDragOverEl = deckRow;
-  } else if (folderHeader) {
-    folderHeader.classList.add("drag-over-inside");
-    lastDragOverEl = folderHeader;
-  } else if (folderContent) {
-    folderContent.classList.add("drag-over-inside");
-    lastDragOverEl = folderContent;
+  if (target && target.indicatorEl && target.indicatorClass) {
+    target.indicatorEl.classList.add(target.indicatorClass);
+    lastDragOverEl = target.indicatorEl;
   }
 }
 
