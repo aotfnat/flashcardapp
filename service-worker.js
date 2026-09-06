@@ -1,12 +1,12 @@
 //service-worker.js Flashcard app
-//Version 1.13
+//Version 1.14
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     iOS/iPadOS Draw-mode fix (preventing Safari's text-selection/callout
-//     gesture from hijacking finger/Apple Pencil input in the draw box)
-//     gets picked up by clients on their next "Check for Update" or
-//     fresh install.
+//     Draw-mode dropped-stroke fix (pointer capture + coalesced-event
+//     handling, so quick lift/resume strokes and fast stylus input no
+//     longer drop segments) gets picked up by clients on their next
+//     "Check for Update" or fresh install.
 
-const CACHE = "study-cards-v1.13";
+const CACHE = "study-cards-v1.14";
 
 const CORE_ASSETS = [
   "./",

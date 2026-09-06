@@ -1,5 +1,22 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.13, SOC: iOS/iPadOS Draw-mode text-selection fix.
+<!-- Version 1.14, SOC: Draw-mode dropped-stroke fix.
+     Reports of missing/broken input in the Draw box after lifting and
+     quickly resuming a stroke — much more pronounced with a stylus — traced
+     to two causes: (1) a fast lift/re-touch can momentarily land the
+     contact point just outside the canvas's exact bounds, firing
+     pointerleave and ending the stroke early, so whatever comes right after
+     the resume never gets a fresh pointerdown paired correctly; and (2) a
+     stylus (Apple Pencil in particular) samples position far faster than
+     the browser fires pointermove, so fast strokes were only ever drawn at
+     the coarser callback rate, skipping segments in between. Fixed via (1)
+     setPointerCapture()/releasePointerCapture() in startStroke()/
+     endStroke() so all events for that pointer keep routing to the canvas
+     regardless of exact position until it's actually lifted, and (2)
+     continueStroke() now draws every point from
+     event.getCoalescedEvents() (falling back to the event itself if
+     unsupported) instead of only the event's own single position.
+     ----------------------------------------------------------------
+     Version 1.13, SOC: iOS/iPadOS Draw-mode text-selection fix.
      On iPad/iPhone, drawing with a finger or Apple Pencil in the Draw
      input mode could accidentally trigger Safari's native text-selection
      / magnifier-loupe gesture over the draw canvas, hijacking the stroke
@@ -1317,7 +1334,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.13";
+const APP_VERSION = "1.14";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -4151,6 +4168,15 @@ function getCanvasPoint(e) {
 
 function startStroke(e) {
   isDrawingStroke = true;
+  // Pointer capture keeps every subsequent event for this pointer routed to
+  // the canvas even if the physical contact point briefly strays outside its
+  // exact bounds — which happens often on a fast lift/re-touch, especially
+  // with a stylus's smaller contact area. Without this, that momentary
+  // "outside the element" state fires pointerleave and silently ends the
+  // stroke, dropping whatever comes right after the resume.
+  if (drawCanvasEl.setPointerCapture) {
+    try { drawCanvasEl.setPointerCapture(e.pointerId); } catch (err) { /* not critical */ }
+  }
   const p = getCanvasPoint(e);
   lastDrawX = p.x;
   lastDrawY = p.y;
@@ -4159,22 +4185,37 @@ function startStroke(e) {
 
 function continueStroke(e) {
   if (!isDrawingStroke) return;
-  const p = getCanvasPoint(e);
   drawCtx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--text").trim() || "#000000";
   drawCtx.lineWidth = 2.5;
   drawCtx.lineCap = "round";
   drawCtx.lineJoin = "round";
-  drawCtx.beginPath();
-  drawCtx.moveTo(lastDrawX, lastDrawY);
-  drawCtx.lineTo(p.x, p.y);
-  drawCtx.stroke();
-  lastDrawX = p.x;
-  lastDrawY = p.y;
+
+  // A stylus (Apple Pencil in particular) reports position at a much higher
+  // rate than the browser fires pointermove callbacks. getCoalescedEvents()
+  // recovers the in-between samples the browser batched up, so fast strokes
+  // don't end up with visible gaps/missing segments between callbacks.
+  const events = (typeof e.getCoalescedEvents === "function" && e.getCoalescedEvents().length)
+    ? e.getCoalescedEvents()
+    : [e];
+
+  events.forEach(ev => {
+    const p = getCanvasPoint(ev);
+    drawCtx.beginPath();
+    drawCtx.moveTo(lastDrawX, lastDrawY);
+    drawCtx.lineTo(p.x, p.y);
+    drawCtx.stroke();
+    lastDrawX = p.x;
+    lastDrawY = p.y;
+  });
+
   e.preventDefault();
 }
 
-function endStroke() {
+function endStroke(e) {
   isDrawingStroke = false;
+  if (e && drawCanvasEl.releasePointerCapture && drawCanvasEl.hasPointerCapture && drawCanvasEl.hasPointerCapture(e.pointerId)) {
+    try { drawCanvasEl.releasePointerCapture(e.pointerId); } catch (err) { /* not critical */ }
+  }
 }
 
 drawCanvasEl.addEventListener("pointerdown", startStroke);
