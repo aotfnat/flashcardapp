@@ -1,5 +1,40 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.11, SOC: Focused Study flag, full-screen menu, longer
+<!-- Version 1.12, SOC: Focused Study flag fixes — no more restarts, a
+     persistent-looking icon, and a new inline position.
+     (1) NO MORE RESTARTS ON FLAG/UNFLAG: flagging a card used to only
+     show up in the Focused Study deck after an explicit "Restart Deck",
+     and unflagging a card while browsing the Focused deck itself
+     restarted that whole pass from card 1. Both now patch the affected
+     study queue directly instead: insertFocusedCardIntoSessions() appends
+     the newly-flagged card's index onto the end of whichever queue
+     currently (or most recently) represents the Focused deck's pass —
+     live, if it's actively being studied, or its saved resume point
+     otherwise. removeFocusedCardFromSessions() does the reverse for an
+     unflag: it reindexes every queue that might hold indices into the
+     Focused deck's cards array (shifting anything after the removed slot
+     down by one, exactly mirroring the splice that just happened to
+     fd.cards) so the *same* sessionIndex now naturally lands on the next
+     card — advanceSingleAfterFocusedRemoval()/
+     advanceMultiAfterFocusedRemoval() then just render it, with no
+     shuffle and no lost position.
+     (2) PERSISTENT, VISIBLE FLAG STATE: the flag button previously used
+     the 🚩 emoji with a CSS `color` rule meant to highlight it once
+     flagged — but colored emoji glyphs ignore CSS color/fill entirely, so
+     the "highlight" never actually appeared outside of the button's own
+     momentary :active tap feedback. Replaced with a two-part inline SVG
+     (a pole `<line>` plus a banner `<path>`) so the banner genuinely
+     toggles between an outline and a solid red fill via the existing
+     `.flagged` class — and since refreshFlagButton() already recomputes
+     this from isFlagged() on every card transition, the correct state now
+     actually shows on every visit to a card, every pass, every time.
+     (3) REPOSITIONED INLINE: the flag button moved out of its own
+     separately-fixed-position spot into a new `.top-right-controls` flex
+     row shared with the card counter and back/flip button, sitting
+     immediately to the left of the counter — replacing fragile
+     hand-tuned `right: calc(...)` offsets for all three with normal
+     flexbox layout.
+     ----------------------------------------------------------------
+     Version 1.11, SOC: Focused Study flag, full-screen menu, longer
      auto-close grace period, optional repeat-incorrect, and input-box
      clearing on deck completion.
      (1) FOCUSED STUDY DECK: a small flag button (🚩) now sits top-right
@@ -168,27 +203,26 @@ button {
   }
 }
 
-#backFlipBtn {
+/* Top-right icon row: flag (outline/fill toggle) — card counter —
+   back/flip button, laid out with flexbox instead of each being
+   separately hand-positioned, so the flag icon can sit inline to the
+   left of the counter without any fragile width math. */
+.top-right-controls {
   position: fixed;
   top: calc(10px + env(safe-area-inset-top));
   right: calc(16px + env(safe-area-inset-right));
   z-index: 1999;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
-  width: 44px;
-  height: 44px;
-  font-size: 28px;
-  line-height: 44px;
-  text-align: center;
+.top-right-controls .top-icon-btn {
+  position: static;
+}
 
-  background: none;
-  color: var(--icon-color);
-  border: none;
-  border-radius: 50%;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
-
-  /* IMPORTANT: Hide by default */
+#backFlipBtn {
+  /* IMPORTANT: Hide by default — shown only once a deck is selected */
   display: none;
   opacity: 0;
 
@@ -201,33 +235,39 @@ button {
   transform: scale(1.08);
 }
 
-/* Show only when we have a deck */
-body.has-deck #backFlipBtn {
-  display: block;
-  opacity: 1;
-}
-
-/* Focused Study flag — sits below the back/flip button, top-right. Shown
-   only while an actual question or answer is on screen (see
-   currentCardIdentity()/refreshFlagButton() in the script), so it's
-   absent on the "Tap to begin" and "Deck Complete!" states. */
+/* Focused Study flag — an outline flag icon that fills in solid red once
+   the current card is flagged. Rendered as inline SVG (rather than the
+   🚩 emoji) so its appearance actually responds to the .flagged state —
+   colored emoji glyphs ignore CSS `color`/`fill` entirely, which is why
+   an emoji-based flag never visibly toggled. Shown only while an actual
+   question or answer is on screen (see currentCardIdentity()/
+   refreshFlagButton() in the script), so it's absent on the "Tap to
+   begin" and "Deck Complete!" states. */
 #flagBtn {
-  position: fixed;
-  top: calc(60px + env(safe-area-inset-top));
-  right: calc(16px + env(safe-area-inset-right));
-  z-index: 1998;
   display: none;
-  font-size: 22px;
 }
 
-#flagBtn.flagged {
-  color: #ff5252;
+#flagBtn svg {
+  display: block;
 }
 
-.sidebar.open ~ #flagBtn {
-  opacity: 0;
-  pointer-events: none;
-  visibility: hidden;
+#flagBtn line {
+  stroke: var(--icon-color);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+#flagBtn path {
+  fill: none;
+  stroke: var(--icon-color);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  transition: fill 0.15s ease, stroke 0.15s ease;
+}
+
+#flagBtn.flagged path {
+  fill: #ff5252;
+  stroke: #ff5252;
 }
 
 #showBtn { background:#444; color:white; }
@@ -312,6 +352,9 @@ img {
   top: calc(10px + env(safe-area-inset-top));
   width: 44px;
   height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 28px;
   line-height: 44px;
   text-align: center;
@@ -342,19 +385,7 @@ img {
   display: none;
 }
 
-/* Hide back button with sidebar */
-.sidebar.open ~ #backFlipBtn {
-  opacity: 0;
-  pointer-events: none;
-  visibility: hidden;
-}
-
 .card-counter {
-  position: fixed;
-  top: calc(10px + env(safe-area-inset-top));
-  right: calc(70px + env(safe-area-inset-right));   /* space for menu button + margin */
-  z-index: 1995;                                     /* below menuBtn but above content */
-
   font-size: 18px;
   font-weight: 600;
   color: var(--muted-text);
@@ -368,8 +399,8 @@ img {
   transition: opacity 0.25s;
 }
 
-.sidebar.open ~ .card-counter,
-.sidebar.open ~ #cardCounter {
+/* Hides the entire flag/counter/back-flip row while the menu is open. */
+.sidebar.open ~ .top-right-controls {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -1141,11 +1172,18 @@ body.dragging-active {
 
 <button class="top-icon-btn menuBtn" onclick="toggleMenu()" aria-label="Open menu">☰</button>
 
-<button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()" aria-label="Go back or flip card">←</button>
+<div class="top-right-controls">
+  <button class="top-icon-btn" id="flagBtn" onclick="toggleFlagCurrentCard()" aria-label="Add to Focused Study" style="display:none;">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+      <line x1="5" y1="3" x2="5" y2="21"/>
+      <path d="M5 4h13l-3 4 3 4H5z"/>
+    </svg>
+  </button>
 
-<button class="top-icon-btn" id="flagBtn" onclick="toggleFlagCurrentCard()" aria-label="Add to Focused Study" style="display:none;">🚩</button>
+  <div id="cardCounter" class="card-counter" onclick="openGoToCardModal()">– / –</div>
 
-<div id="cardCounter" class="card-counter" onclick="openGoToCardModal()">– / –</div>
+  <button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()" aria-label="Go back or flip card">←</button>
+</div>
 
 <div id="autoCloseMessage">Auto-close paused for 30 seconds</div>
 
@@ -1247,7 +1285,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.11";
+const APP_VERSION = "1.12";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -1479,18 +1517,106 @@ function deleteFocusedDeckIfEmpty() {
   clearSessionFor(FOCUSED_DECK_NAME);
 }
 
+// Drops one index from a plain index queue (used by single-deck sessions),
+// shifting every later index down by one to account for the array splice
+// that already happened on the underlying Focused deck's cards array.
+function reindexAfterFocusedSplice(queue, removedIndex) {
+  return queue.filter(i => i !== removedIndex).map(i => (i > removedIndex ? i - 1 : i));
+}
+
+// Same idea, but for the {deck, idx} ref queues used by multi-deck study —
+// only entries pointing at the Focused deck itself are affected.
+function reindexRefsAfterFocusedSplice(queue, removedIndex) {
+  return queue
+    .filter(r => !(r.deck === FOCUSED_DECK_NAME && r.idx === removedIndex))
+    .map(r => (r.deck === FOCUSED_DECK_NAME && r.idx > removedIndex) ? { deck: r.deck, idx: r.idx - 1 } : r);
+}
+
+// Inserts a newly-flagged card into whatever study session currently
+// references the Focused Study deck — its live queue if it's actively
+// being studied right now (single- or multi-deck), or its *saved* resume
+// point otherwise — so the new card shows up without forcing a restart.
+function insertFocusedCardIntoSessions(newIndex) {
+  if (!inMultiStudy && currentDeck === FOCUSED_DECK_NAME) {
+    sessionQueue.push(newIndex); // unreachable in practice (flagging while
+    return;                      // browsing Focused is always an unflag),
+  }                               // kept for robustness.
+
+  if (inMultiStudy && multiStudyDecks && multiStudyDecks.includes(FOCUSED_DECK_NAME)) {
+    multiQueue.push({ deck: FOCUSED_DECK_NAME, idx: newIndex });
+    return;
+  }
+
+  // Not actively being studied — patch its saved resume point(s) instead,
+  // if any exist, so the next visit already includes the new card.
+  const saved = sessionState.decks[FOCUSED_DECK_NAME];
+  if (saved && Array.isArray(saved.queue)) {
+    saved.queue.push(newIndex);
+  }
+  const savedMulti = sessionState.activeMultiStudy;
+  if (savedMulti && Array.isArray(savedMulti.decks) && savedMulti.decks.includes(FOCUSED_DECK_NAME) && Array.isArray(savedMulti.queue)) {
+    savedMulti.queue.push({ deck: FOCUSED_DECK_NAME, idx: newIndex });
+  }
+}
+
+// Mirror of insertFocusedCardIntoSessions() for removal: patches every
+// place that might be holding indices into the Focused deck's cards array
+// so a removed card's slot doesn't leave anything stale or out of bounds.
+function removeFocusedCardFromSessions(removedIndex) {
+  const studyingFocusedSingle = !inMultiStudy && currentDeck === FOCUSED_DECK_NAME;
+  const studyingFocusedMulti = inMultiStudy && multiStudyDecks && multiStudyDecks.includes(FOCUSED_DECK_NAME);
+
+  if (studyingFocusedSingle) {
+    sessionQueue = reindexAfterFocusedSplice(sessionQueue, removedIndex);
+    repeatQueue = reindexAfterFocusedSplice(repeatQueue, removedIndex);
+  } else {
+    const saved = sessionState.decks[FOCUSED_DECK_NAME];
+    if (saved) {
+      if (Array.isArray(saved.queue)) saved.queue = reindexAfterFocusedSplice(saved.queue, removedIndex);
+      if (Array.isArray(saved.repeat)) saved.repeat = reindexAfterFocusedSplice(saved.repeat, removedIndex);
+      if (typeof saved.index === "number" && saved.index > saved.queue.length) saved.index = saved.queue.length;
+    }
+  }
+
+  if (studyingFocusedMulti) {
+    multiQueue = reindexRefsAfterFocusedSplice(multiQueue, removedIndex);
+    multiRepeatQueue = reindexRefsAfterFocusedSplice(multiRepeatQueue, removedIndex);
+  } else {
+    const savedMulti = sessionState.activeMultiStudy;
+    if (savedMulti && Array.isArray(savedMulti.decks) && savedMulti.decks.includes(FOCUSED_DECK_NAME)) {
+      if (Array.isArray(savedMulti.queue)) savedMulti.queue = reindexRefsAfterFocusedSplice(savedMulti.queue, removedIndex);
+      if (Array.isArray(savedMulti.repeat)) savedMulti.repeat = reindexRefsAfterFocusedSplice(savedMulti.repeat, removedIndex);
+      if (typeof savedMulti.index === "number" && savedMulti.index > savedMulti.queue.length) savedMulti.index = savedMulti.queue.length;
+    }
+  }
+
+  return { studyingFocusedSingle, studyingFocusedMulti };
+}
+
 function addToFocused(deckName, cardId) {
   const fd = ensureFocusedDeck();
   if (!fd.cards.some(r => r.refDeck === deckName && r.refId === cardId)) {
     fd.cards.push({ refDeck: deckName, refId: cardId });
+    insertFocusedCardIntoSessions(fd.cards.length - 1);
   }
 }
 
+// Removes one ref from the Focused deck and patches every session that
+// might reference it. Returns info the caller needs to advance the
+// on-screen study view in place instead of restarting it, or null if the
+// card wasn't actually in the deck.
 function removeFromFocused(deckName, cardId) {
   const fd = data.decks[FOCUSED_DECK_NAME];
-  if (!fd) return;
-  fd.cards = fd.cards.filter(r => !(r.refDeck === deckName && r.refId === cardId));
+  if (!fd) return null;
+
+  const removedIndex = fd.cards.findIndex(r => r.refDeck === deckName && r.refId === cardId);
+  if (removedIndex === -1) return null;
+
+  fd.cards.splice(removedIndex, 1);
+  const { studyingFocusedSingle, studyingFocusedMulti } = removeFocusedCardFromSessions(removedIndex);
   deleteFocusedDeckIfEmpty();
+
+  return { studyingFocusedSingle, studyingFocusedMulti, deckStillExists: !!data.decks[FOCUSED_DECK_NAME] };
 }
 
 // Strips out any Focused Study pointers referencing a card/deck that no
@@ -1523,54 +1649,109 @@ function resetToNoDeckSelected() {
   saveSession();
 }
 
+// Advances the on-screen single-deck study view after a card was just
+// spliced out of the (already-reindexed) sessionQueue in place — mirrors
+// the end-of-pass handling in grade(), but never touches deck.cards.
+function advanceSingleAfterFocusedRemoval() {
+  if (sessionIndex >= sessionQueue.length) {
+    if (repeatQueue.length > 0) {
+      sessionQueue = repeatQueue;
+      repeatQueue = [];
+      sessionIndex = 0;
+      showQuestion();
+    } else {
+      showDeckComplete();
+      return;
+    }
+  } else {
+    showQuestion();
+  }
+  updateCardCounter();
+  saveSession();
+}
+
+// Multi-deck equivalent of advanceSingleAfterFocusedRemoval().
+function advanceMultiAfterFocusedRemoval() {
+  if (multiIndex >= multiQueue.length) {
+    if (multiRepeatQueue.length > 0) {
+      multiQueue = multiRepeatQueue;
+      multiRepeatQueue = [];
+      multiIndex = 0;
+      showMultiQuestion();
+    } else {
+      showMultiComplete();
+      return;
+    }
+  } else {
+    showMultiQuestion();
+  }
+  updateCardCounter();
+  saveSession();
+}
+
 // Tapping the flag button — adds/removes the exact card currently on
-// screen to/from the Focused Study deck. If that removal empties the
-// Focused Study deck while it's the (or one of the) deck(s) actively being
-// studied, the active session is refreshed since the indices it was
-// holding into that deck's cards array may have just shifted or vanished.
+// screen to/from the Focused Study deck. Neither direction forces a full
+// deck restart: adding patches the relevant queue directly (see
+// insertFocusedCardIntoSessions()), and removing reindexes the queue in
+// place and simply advances to the next card (see
+// removeFocusedCardFromSessions()) — unless removing the last card in the
+// Focused deck empties it entirely, in which case the view falls back to
+// "no deck selected" (single-deck) or drops out of the multi-deck session.
 function toggleFlagCurrentCard() {
   const identity = currentCardIdentity();
   if (!identity) return;
 
   const wasFlagged = isFlagged(identity);
-  const studyingFocusedSingle = !inMultiStudy && currentDeck === FOCUSED_DECK_NAME;
-  const studyingFocusedMulti = inMultiStudy && multiStudyDecks && multiStudyDecks.includes(FOCUSED_DECK_NAME);
 
-  if (wasFlagged) {
-    removeFromFocused(identity.deckName, identity.id);
-  } else {
+  if (!wasFlagged) {
     addToFocused(identity.deckName, identity.id);
+    save();
+    renderDecks();
+    updateBackButton(); // also refreshes the flag button's own appearance
+    return;
   }
 
+  const result = removeFromFocused(identity.deckName, identity.id);
   save();
   renderDecks();
 
-  if (studyingFocusedSingle) {
-    if (data.decks[FOCUSED_DECK_NAME]) {
-      startSession(false); // re-derive the pass — indices may have shifted
+  if (!result) {
+    updateBackButton();
+    return;
+  }
+
+  if (result.studyingFocusedSingle) {
+    if (result.deckStillExists) {
+      advanceSingleAfterFocusedRemoval();
     } else {
       resetToNoDeckSelected();
     }
     return;
   }
 
-  if (studyingFocusedMulti) {
-    const remaining = multiStudyDecks.filter(n => data.decks[n]);
-    if (remaining.length >= 2) {
-      startMultiStudy(remaining, multiShuffleTogether, false);
-    } else if (remaining.length === 1) {
-      inMultiStudy = false;
-      multiStudyDecks = null;
-      selectDeckAndStudy(remaining[0]);
+  if (result.studyingFocusedMulti) {
+    if (result.deckStillExists) {
+      advanceMultiAfterFocusedRemoval();
     } else {
-      inMultiStudy = false;
-      multiStudyDecks = null;
-      resetToNoDeckSelected();
+      const remaining = multiStudyDecks.filter(n => n !== FOCUSED_DECK_NAME && data.decks[n]);
+      if (remaining.length >= 2) {
+        startMultiStudy(remaining, multiShuffleTogether, false);
+      } else if (remaining.length === 1) {
+        inMultiStudy = false;
+        multiStudyDecks = null;
+        selectDeckAndStudy(remaining[0]);
+      } else {
+        inMultiStudy = false;
+        multiStudyDecks = null;
+        resetToNoDeckSelected();
+      }
     }
     return;
   }
 
-  updateBackButton(); // also refreshes the flag button's own appearance
+  // Unflagged while browsing some other deck entirely — that deck's own
+  // active session is untouched; just refresh the flag icon/back button.
+  updateBackButton();
 }
 
 // Keeps the flag button's visibility/appearance in sync with whatever
@@ -1585,7 +1766,7 @@ function refreshFlagButton() {
     btn.style.display = "none";
     return;
   }
-  btn.style.display = "block";
+  btn.style.display = "flex";
   const flagged = isFlagged(identity);
   btn.classList.toggle("flagged", flagged);
   btn.setAttribute("aria-label", flagged ? "Remove from Focused Study" : "Add to Focused Study");
@@ -1819,7 +2000,7 @@ function updateBackButton() {
   refreshFlagButton();
 
   if (inMultiStudy) {
-    backFlipBtn.style.display = "block";
+    backFlipBtn.style.display = "flex";
     const shouldEnable = showBothMode ? multiIndex > 0 : (multiShowingAnswer || multiIndex > 0);
     backFlipBtn.disabled = !shouldEnable;
     backFlipBtn.style.opacity = shouldEnable ? "1" : "0.4";
@@ -1830,7 +2011,7 @@ function updateBackButton() {
     backFlipBtn.style.display = "none";
     return;
   }
-  backFlipBtn.style.display = "block";
+  backFlipBtn.style.display = "flex";
 
   const shouldEnable = showBothMode ? sessionIndex > 0 : (showingAnswer || sessionIndex > 0);
   backFlipBtn.disabled = !shouldEnable;

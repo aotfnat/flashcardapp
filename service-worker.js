@@ -1,12 +1,12 @@
 //service-worker.js Flashcard app
-//Version 1.11
+//Version 1.12
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     new Focused Study flag feature, full-screen menu, extended auto-close
-//     grace period, Repeat Incorrect Cards setting, and input-box clearing
-//     on deck completion get picked up by clients on their next
+//     Focused Study flag fixes (no more restarts on flag/unflag, a
+//     persistent-looking flag icon, and its new inline position next to
+//     the card counter) get picked up by clients on their next
 //     "Check for Update" or fresh install.
 
-const CACHE = "study-cards-v1.11";
+const CACHE = "study-cards-v1.12";
 
 const CORE_ASSETS = [
   "./",
