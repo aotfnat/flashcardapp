@@ -1,5 +1,41 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.10, SOC: Drag-and-drop refinements + Decks menu cleanup.
+<!-- Version 1.11, SOC: Focused Study flag, full-screen menu, longer
+     auto-close grace period, optional repeat-incorrect, and input-box
+     clearing on deck completion.
+     (1) FOCUSED STUDY DECK: a small flag button (🚩) now sits top-right
+     during study. Tapping it while a question/answer is showing adds that
+     exact card to an auto-created "Focused Study" deck (or removes it if
+     already flagged). Cards keep a stable `id` (assigned on creation, and
+     lazily backfilled for older saved cards via loadData()'s migration
+     pass) so the Focused Study deck can store lightweight {refDeck,refId}
+     pointers into their real source deck instead of duplicating card data
+     — edits to the original always show up, and there's only ever one
+     copy of the truth. resolveCardRef()/currentCardIdentity() are the two
+     new single sources of truth used everywhere a card actually needs to
+     be displayed or identified, so this plugs into the existing single-
+     and multi-deck study code paths (showQuestion/showAnswer/
+     showMultiQuestion/showMultiAnswer) with minimal duplication. The
+     Focused Study deck auto-deletes itself once its last card is
+     unflagged. Add/Edit Cards is disabled for this deck (mirroring how
+     multi-select/multi-study already disable it), and Export Current
+     Deck resolves the real cards first so it doesn't export raw pointers.
+     (2) FULL-SCREEN MENU: the sidebar now expands to the full viewport
+     width instead of a fixed 260px, giving long deck/folder names room to
+     breathe. The floating "×" close button moves to the top-right corner
+     to match.
+     (3) AUTO-CLOSE GRACE PERIOD: extended from the previous 60s constant
+     (which didn't match the "15 seconds" copy shown in the UI) to a
+     clearly-stated 30 seconds, with the on-screen message text corrected
+     to match.
+     (4) REPEAT INCORRECT CARDS: new Settings toggle (default ON, matching
+     prior behavior) controlling whether missed cards re-queue at the end
+     of a pass. Wired into both grade() and gradeMulti().
+     (5) INPUT BOX CLEARING ON DECK COMPLETE: showDeckComplete() and
+     showMultiComplete() now clear/hide the free-text answer box and wipe
+     the draw canvas, instead of leaving the last card's leftover input
+     visible behind the "Deck Complete!" message.
+     ----------------------------------------------------------------
+     Version 1.10, SOC: Drag-and-drop refinements + Decks menu cleanup.
      (1) SAME-POSITION BUG: dropping a deck onto the bottom half of the
      deck directly above it used to send it to the end of the list,
      because that target's very next DOM sibling was the dragged deck
@@ -171,6 +207,29 @@ body.has-deck #backFlipBtn {
   opacity: 1;
 }
 
+/* Focused Study flag — sits below the back/flip button, top-right. Shown
+   only while an actual question or answer is on screen (see
+   currentCardIdentity()/refreshFlagButton() in the script), so it's
+   absent on the "Tap to begin" and "Deck Complete!" states. */
+#flagBtn {
+  position: fixed;
+  top: calc(60px + env(safe-area-inset-top));
+  right: calc(16px + env(safe-area-inset-right));
+  z-index: 1998;
+  display: none;
+  font-size: 22px;
+}
+
+#flagBtn.flagged {
+  color: #ff5252;
+}
+
+.sidebar.open ~ #flagBtn {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
 #showBtn { background:#444; color:white; }
 
 #correctBtn {
@@ -326,7 +385,8 @@ img {
    fixed to the viewport and shown/hidden purely via the .sidebar.open
    sibling selector, matching the pattern already used for #backFlipBtn. */
 .closeMenuBtn {
-  left: calc(204px + env(safe-area-inset-left));
+  left: auto;
+  right: calc(16px + env(safe-area-inset-right));
   z-index: 2001;
   font-size: 32px;
   display: none;
@@ -340,7 +400,7 @@ img {
   position:fixed;
   top:0;
   left:0;
-  width:260px;
+  width:100%;
   height:100%;
   background:var(--sidebar-bg);
   transform:translateX(-100%);
@@ -1025,6 +1085,7 @@ body.dragging-active {
     <div class="menu-section-content">
       <button onclick="toggleInputMode()">User Input Mode: <span id="inputModeStatus">OFF</span></button>
       <button onclick="toggleShowBoth()">Show Q&amp;A Together: <span id="showBothStatus">OFF</span></button>
+      <button onclick="toggleRepeatIncorrect()">Repeat Incorrect Cards: <span id="repeatIncorrectStatus">ON</span></button>
       <button onclick="toggleTheme()">Theme: <span id="themeModeStatus">Dark</span></button>
 
       <h4>App Info</h4>
@@ -1082,9 +1143,11 @@ body.dragging-active {
 
 <button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()" aria-label="Go back or flip card">←</button>
 
+<button class="top-icon-btn" id="flagBtn" onclick="toggleFlagCurrentCard()" aria-label="Add to Focused Study" style="display:none;">🚩</button>
+
 <div id="cardCounter" class="card-counter" onclick="openGoToCardModal()">– / –</div>
 
-<div id="autoCloseMessage">Auto-close paused for 15 seconds</div>
+<div id="autoCloseMessage">Auto-close paused for 30 seconds</div>
 
 <div class="main-content-area">
   <div id="card">Tap “Show Question” to begin</div>
@@ -1112,6 +1175,31 @@ body.dragging-active {
 </div>
 
 <script>
+// ---------------------------------------------------------------------
+// Focused Study (v1.11) — a reserved, auto-created/auto-deleted deck that
+// holds lightweight {refDeck, refId} pointers (not real card copies) into
+// cards flagged from anywhere in the app. See resolveCardRef() and
+// toggleFlagCurrentCard() further down. Declared before loadData() runs
+// since its migration pass uses genCardId()/FOCUSED_DECK_NAME.
+// ---------------------------------------------------------------------
+const FOCUSED_DECK_NAME = "Focused Study";
+
+// Stable per-card identifiers, used so the Focused Study deck can point at
+// a specific card regardless of its position in deck.cards (which shifts
+// as cards are added/edited/deleted/reordered).
+let idCounter = 0;
+function genCardId() {
+  return "c" + Date.now().toString(36) + "_" + (idCounter++) + "_" + Math.random().toString(36).slice(2, 7);
+}
+
+// Whether missed cards get re-queued at the end of a study pass. Persisted
+// like Theme/Show-Q&A-Together; defaults to the prior always-on behavior.
+let repeatIncorrectEnabled = true;
+try {
+  const savedRepeat = localStorage.getItem("flashcardsRepeatIncorrect");
+  if (savedRepeat !== null) repeatIncorrectEnabled = savedRepeat === "true";
+} catch (e) { /* localStorage unavailable — default to on */ }
+
 let data = loadData();
 let currentDeck = null;
 
@@ -1137,7 +1225,7 @@ try {
 } catch (e) { /* localStorage unavailable — default to off */ }
 let autoCloseEnabled = true;
 let lastDeckSelectionTime = 0;
-const AUTO_CLOSE_GRACE_PERIOD = 60 * 1000; // 1 minute in milliseconds
+const AUTO_CLOSE_GRACE_PERIOD = 30 * 1000; // 30 seconds in milliseconds
 
 // ---------------------------------------------------------------------
 // Folders + multi-select + multi-deck study state (v1.9)
@@ -1159,7 +1247,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.10";
+const APP_VERSION = "1.11";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -1201,7 +1289,7 @@ function loadData() {
   // "originalCards" array and a "completed" flag. A past bug could leave
   // deck.cards holding only a partial (repeat-queue) subset of the deck while
   // originalCards still had the full set — prefer the more complete list.
-  Object.values(parsed.decks || {}).forEach(deck => {
+  Object.entries(parsed.decks || {}).forEach(([deckName, deck]) => {
     if (Array.isArray(deck.originalCards) &&
         deck.originalCards.length >= (Array.isArray(deck.cards) ? deck.cards.length : 0)) {
       deck.cards = deck.originalCards;
@@ -1209,6 +1297,17 @@ function loadData() {
     if (!Array.isArray(deck.cards)) deck.cards = [];
     delete deck.originalCards;
     delete deck.completed;
+
+    // The Focused Study deck stores {refDeck, refId} pointers rather than
+    // real cards, so it's exempt from the id-backfill below.
+    if (deckName === FOCUSED_DECK_NAME) {
+      deck.isFocused = true;
+      return;
+    }
+
+    // Backfill stable ids onto any card saved before v1.11 introduced them
+    // (needed so flagging/unflagging can reliably reference a specific card).
+    deck.cards.forEach(c => { if (c && !c.id) c.id = genCardId(); });
   });
 
   return parsed;
@@ -1304,6 +1403,192 @@ function flattenDeckOrder() {
     else if (e.type === "folder") (data.folderOrder[e.name] || []).forEach(n => result.push(n));
   });
   return result;
+}
+
+// ---------------------------------------------------------------------
+// Focused Study helpers (v1.11)
+// ---------------------------------------------------------------------
+
+function isFocusedDeck(name) {
+  return !!(name && data.decks[name] && data.decks[name].isFocused);
+}
+
+// Resolves the actual underlying card + its real source deck name for a
+// given (deckName, index) pair. For a normal deck this is just the deck
+// itself; for the Focused Study deck (which stores {refDeck, refId}
+// pointers instead of real cards) this looks up the live card in its
+// source deck by id — so edits to the original card always show up here,
+// and there's only ever one copy of the actual card data. Returns null if
+// the deck/index/underlying card no longer exists.
+function resolveCardRef(deckName, index) {
+  const deck = data.decks[deckName];
+  if (!deck) return null;
+  const raw = deck.cards[index];
+  if (!raw) return null;
+  if (isFocusedDeck(deckName)) {
+    const src = data.decks[raw.refDeck];
+    if (!src) return null;
+    const card = src.cards.find(c => c.id === raw.refId);
+    if (!card) return null;
+    return { card, sourceDeck: raw.refDeck };
+  }
+  return { card: raw, sourceDeck: deckName };
+}
+
+// Identifies the exact underlying card (its real source deck + id) that's
+// currently on screen, resolving through Focused Study if needed. Returns
+// null whenever there's no card actually being displayed right now (the
+// "Tap to begin" and "Deck Complete!" states, or nothing selected).
+function currentCardIdentity() {
+  if (inMultiStudy) {
+    if (multiFirstShow) return null;
+    if (!multiQueue.length || multiIndex >= multiQueue.length) return null;
+    const ref = multiQueue[multiIndex];
+    const resolved = resolveCardRef(ref.deck, ref.idx);
+    return resolved ? { deckName: resolved.sourceDeck, id: resolved.card.id } : null;
+  }
+  if (!currentDeck) return null;
+  if (firstShow) return null;
+  if (!sessionQueue.length || sessionIndex >= sessionQueue.length) return null;
+  const resolved = resolveCardRef(currentDeck, sessionQueue[sessionIndex]);
+  return resolved ? { deckName: resolved.sourceDeck, id: resolved.card.id } : null;
+}
+
+function isFlagged(identity) {
+  const fd = data.decks[FOCUSED_DECK_NAME];
+  if (!fd || !identity) return false;
+  return fd.cards.some(r => r.refDeck === identity.deckName && r.refId === identity.id);
+}
+
+function ensureFocusedDeck() {
+  if (!data.decks[FOCUSED_DECK_NAME]) {
+    data.decks[FOCUSED_DECK_NAME] = { cards: [], mode: "sequential", done: false, folder: null, isFocused: true };
+    data.rootOrder.unshift({ type: "deck", name: FOCUSED_DECK_NAME });
+  }
+  return data.decks[FOCUSED_DECK_NAME];
+}
+
+// Removes the Focused Study deck entirely once it has no cards left, plus
+// any now-meaningless saved resume point for it — keeps the deck list
+// clean rather than leaving a permanent empty entry behind.
+function deleteFocusedDeckIfEmpty() {
+  const fd = data.decks[FOCUSED_DECK_NAME];
+  if (!fd || fd.cards.length > 0) return;
+  delete data.decks[FOCUSED_DECK_NAME];
+  data.rootOrder = data.rootOrder.filter(e => !(e.type === "deck" && e.name === FOCUSED_DECK_NAME));
+  clearSessionFor(FOCUSED_DECK_NAME);
+}
+
+function addToFocused(deckName, cardId) {
+  const fd = ensureFocusedDeck();
+  if (!fd.cards.some(r => r.refDeck === deckName && r.refId === cardId)) {
+    fd.cards.push({ refDeck: deckName, refId: cardId });
+  }
+}
+
+function removeFromFocused(deckName, cardId) {
+  const fd = data.decks[FOCUSED_DECK_NAME];
+  if (!fd) return;
+  fd.cards = fd.cards.filter(r => !(r.refDeck === deckName && r.refId === cardId));
+  deleteFocusedDeckIfEmpty();
+}
+
+// Strips out any Focused Study pointers referencing a card/deck that no
+// longer exists — called wherever a card or a whole deck is deleted.
+function removeFocusedRefsFor(deckName, cardId) {
+  const fd = data.decks[FOCUSED_DECK_NAME];
+  if (!fd) return;
+  fd.cards = fd.cards.filter(r => !(r.refDeck === deckName && (cardId === undefined || r.refId === cardId)));
+  deleteFocusedDeckIfEmpty();
+}
+
+// Puts the study view back into its empty "no deck selected" state —
+// shared by deck deletion and by the flag-toggle fallback for when
+// unflagging removes the last card from an actively-studied Focused deck.
+function resetToNoDeckSelected() {
+  currentDeck = null;
+  sessionQueue = [];
+  sessionIndex = 0;
+
+  cardEl.innerText = 'Tap “Show Question” to begin';
+  showBtn.innerText = "Show Question";
+  showBtn.onclick = handleShow;
+  showBtn.style.display = "block";
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  markDoneBtn.style.display = "none";
+  updateBackButton();
+  updateCardCounter();
+  updateContextLabels();
+  saveSession();
+}
+
+// Tapping the flag button — adds/removes the exact card currently on
+// screen to/from the Focused Study deck. If that removal empties the
+// Focused Study deck while it's the (or one of the) deck(s) actively being
+// studied, the active session is refreshed since the indices it was
+// holding into that deck's cards array may have just shifted or vanished.
+function toggleFlagCurrentCard() {
+  const identity = currentCardIdentity();
+  if (!identity) return;
+
+  const wasFlagged = isFlagged(identity);
+  const studyingFocusedSingle = !inMultiStudy && currentDeck === FOCUSED_DECK_NAME;
+  const studyingFocusedMulti = inMultiStudy && multiStudyDecks && multiStudyDecks.includes(FOCUSED_DECK_NAME);
+
+  if (wasFlagged) {
+    removeFromFocused(identity.deckName, identity.id);
+  } else {
+    addToFocused(identity.deckName, identity.id);
+  }
+
+  save();
+  renderDecks();
+
+  if (studyingFocusedSingle) {
+    if (data.decks[FOCUSED_DECK_NAME]) {
+      startSession(false); // re-derive the pass — indices may have shifted
+    } else {
+      resetToNoDeckSelected();
+    }
+    return;
+  }
+
+  if (studyingFocusedMulti) {
+    const remaining = multiStudyDecks.filter(n => data.decks[n]);
+    if (remaining.length >= 2) {
+      startMultiStudy(remaining, multiShuffleTogether, false);
+    } else if (remaining.length === 1) {
+      inMultiStudy = false;
+      multiStudyDecks = null;
+      selectDeckAndStudy(remaining[0]);
+    } else {
+      inMultiStudy = false;
+      multiStudyDecks = null;
+      resetToNoDeckSelected();
+    }
+    return;
+  }
+
+  updateBackButton(); // also refreshes the flag button's own appearance
+}
+
+// Keeps the flag button's visibility/appearance in sync with whatever
+// card is currently on screen. Called from updateBackButton() so it stays
+// current through every study-state transition without needing its own
+// call site everywhere.
+function refreshFlagButton() {
+  const btn = document.getElementById("flagBtn");
+  if (!btn) return;
+  const identity = currentCardIdentity();
+  if (!identity) {
+    btn.style.display = "none";
+    return;
+  }
+  btn.style.display = "block";
+  const flagged = isFlagged(identity);
+  btn.classList.toggle("flagged", flagged);
+  btn.setAttribute("aria-label", flagged ? "Remove from Focused Study" : "Add to Focused Study");
 }
 
 function save(){
@@ -1531,6 +1816,8 @@ function handleBackOrFlip() {
 }
 
 function updateBackButton() {
+  refreshFlagButton();
+
   if (inMultiStudy) {
     backFlipBtn.style.display = "block";
     const shouldEnable = showBothMode ? multiIndex > 0 : (multiShowingAnswer || multiIndex > 0);
@@ -1809,6 +2096,11 @@ function renderCardList() {
 
   if (!currentDeck) {
     cardListEl.innerHTML = "<p style='color:#888;'>Select a deck first</p>";
+    return;
+  }
+
+  if (isFocusedDeck(currentDeck)) {
+    cardListEl.innerHTML = "<p style='color:#888;'>Focused Study cards are managed by flagging — edit them from their original deck.</p>";
     return;
   }
 
@@ -2122,6 +2414,11 @@ function addDeck() {
   const name = prompt("Deck name?");
   if (!name) return;
 
+  if (name === FOCUSED_DECK_NAME) {
+    alert(`"${FOCUSED_DECK_NAME}" is a reserved name used by the flag feature. Please choose another name.`);
+    return;
+  }
+
   if (data.decks[name]) {
     alert("A deck with that name already exists.");
     return;
@@ -2255,22 +2552,14 @@ function confirmDeleteDeck() {
   delete data.decks[deckPendingDelete];
   clearSessionFor(deckPendingDelete);
 
-  if (wasCurrentDeck) {
-    currentDeck = null;
-    sessionQueue = [];
-    sessionIndex = 0;
+  // Any Focused Study pointers into the deck being deleted are now
+  // meaningless — drop them (and the Focused deck itself, if that empties it).
+  if (deckPendingDelete !== FOCUSED_DECK_NAME) {
+    removeFocusedRefsFor(deckPendingDelete);
+  }
 
-    cardEl.innerText = 'Tap “Show Question” to begin';
-    showBtn.innerText = "Show Question";
-    showBtn.onclick = handleShow;
-    showBtn.style.display = "block";
-    correctBtn.style.display = "none";
-    incorrectBtn.style.display = "none";
-    markDoneBtn.style.display = "none";
-    updateBackButton();
-    updateCardCounter();
-    updateContextLabels();
-    saveSession();
+  if (wasCurrentDeck) {
+    resetToNoDeckSelected();
   }
 
   save();
@@ -2403,6 +2692,19 @@ function toggleShowBoth() {
   }
 }
 
+// Toggles whether cards marked Incorrect get re-queued at the end of the
+// current pass. Only affects grading going forward — it doesn't retroactively
+// touch a repeat queue that's already been built for the in-progress pass.
+function toggleRepeatIncorrect() {
+  repeatIncorrectEnabled = !repeatIncorrectEnabled;
+  try {
+    localStorage.setItem("flashcardsRepeatIncorrect", repeatIncorrectEnabled ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+
+  const status = document.getElementById("repeatIncorrectStatus");
+  if (status) status.textContent = repeatIncorrectEnabled ? "ON" : "OFF";
+}
+
 // Toggles the body-level class that shrinks the question card's own
 // buffers so the draw canvas has as much vertical room as possible. Only
 // relevant while Draw mode is selected — see the CSS rules on
@@ -2468,16 +2770,24 @@ function updateContextLabels() {
   updateAddEditAvailability();
 }
 
-// Add Card / Edit Cards only make sense against one unambiguous deck, so
-// they're disabled while multi-select is on or a multi-deck study session
+// Add Card / Edit Cards only make sense against one unambiguous, real deck,
+// so they're disabled while multi-select is on, a multi-deck study session
 // is active (per-card position also stops being meaningful across decks —
-// handled separately in updateCardCounter()).
+// handled separately in updateCardCounter()), or the Focused Study deck is
+// selected (its "cards" are just pointers into other decks — edit them at
+// the source instead).
 function updateAddEditAvailability() {
-  const disabled = multiSelectMode || inMultiStudy;
+  const focused = !inMultiStudy && isFocusedDeck(currentDeck);
+  const disabled = multiSelectMode || inMultiStudy || focused;
   const formArea = document.getElementById("addEditFormArea");
   const note = document.getElementById("addEditDisabledNote");
   if (formArea) formArea.classList.toggle("disabled", disabled);
-  if (note) note.style.display = disabled ? "block" : "none";
+  if (note) {
+    note.style.display = disabled ? "block" : "none";
+    note.textContent = focused
+      ? "Focused Study cards are managed by flagging — add or edit them from their original deck."
+      : "Exit multi-select / multi-deck study to add or edit cards.";
+  }
 }
 
 // Builds a plain [0, 1, 2, ...] index array for a deck's cards — the
@@ -2602,16 +2912,16 @@ function handleShow(){
     }
     if (showBothMode) {
       if (multiFirstShow) {
-        showMultiQuestion();
         multiFirstShow = false;
+        showMultiQuestion();
       } else {
         advanceMulti();
       }
       return;
     }
     if (multiFirstShow) {
-      showMultiQuestion();
       multiFirstShow = false;
+      showMultiQuestion();
     } else if (!multiShowingAnswer) {
       showMultiAnswer();
     }
@@ -2626,8 +2936,8 @@ function handleShow(){
 
   if (showBothMode) {
     if (firstShow) {
-      showQuestion();
       firstShow = false;
+      showQuestion();
     } else {
       advanceCard();
     }
@@ -2635,16 +2945,24 @@ function handleShow(){
   }
 
   if(firstShow){
-    showQuestion();
     firstShow=false;
+    showQuestion();
   } else if(!showingAnswer){
     showAnswer();
   }
 }
 
 function showQuestion() {
-  const deck = data.decks[currentDeck];
-  const card = deck.cards[sessionQueue[sessionIndex]];
+  const resolved = resolveCardRef(currentDeck, sessionQueue[sessionIndex]);
+  if (!resolved) {
+    cardEl.innerText = "This card is no longer available.";
+    showBtn.style.display = "none";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    updateBackButton();
+    return;
+  }
+  const card = resolved.card;
 
   if (showBothMode) {
     // Combined view: no separate reveal step, so treat the card as
@@ -2713,8 +3031,16 @@ function showQuestion() {
 }
 
 function showAnswer() {
-  const deck = data.decks[currentDeck];
-  const card = deck.cards[sessionQueue[sessionIndex]];
+  const resolved = resolveCardRef(currentDeck, sessionQueue[sessionIndex]);
+  if (!resolved) {
+    cardEl.innerText = "This card is no longer available.";
+    showBtn.style.display = "none";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    updateBackButton();
+    return;
+  }
+  const card = resolved.card;
 
   if (userInputMode === "text" || userInputMode === "draw") {
     // The learner's free-text/drawn answer isn't auto-graded — just show
@@ -2760,6 +3086,13 @@ function showDeckComplete() {
   showBtn.style.display = "block";
   markDoneBtn.style.display = "block";
 
+  // Clear out whatever the learner typed/drew on the final card instead of
+  // leaving it visible behind the "Deck Complete!" message.
+  userAnswerArea.value = "";
+  userAnswerArea.style.display = "none";
+  drawBoxContainer.style.display = "none";
+  clearDrawCanvas();
+
   saveSession();
 }
 
@@ -2767,7 +3100,7 @@ function grade(correct) {
   if (inMultiStudy) { gradeMulti(correct); return; }
 
   const cardIndex = sessionQueue[sessionIndex];
-  if (!correct) {
+  if (!correct && repeatIncorrectEnabled) {
     repeatQueue.push(cardIndex); // Add incorrect cards' indices to repeatQueue
   }
 
@@ -2933,7 +3266,16 @@ function restoreMultiCardDisplay() {
 
 function showMultiQuestion() {
   const ref = multiQueue[multiIndex];
-  const card = data.decks[ref.deck].cards[ref.idx];
+  const resolved = resolveCardRef(ref.deck, ref.idx);
+  if (!resolved) {
+    cardEl.innerText = "This card is no longer available.";
+    showBtn.style.display = "none";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    updateBackButton();
+    return;
+  }
+  const card = resolved.card;
 
   if (showBothMode) {
     multiShowingAnswer = true;
@@ -2990,7 +3332,16 @@ function showMultiQuestion() {
 
 function showMultiAnswer() {
   const ref = multiQueue[multiIndex];
-  const card = data.decks[ref.deck].cards[ref.idx];
+  const resolved = resolveCardRef(ref.deck, ref.idx);
+  if (!resolved) {
+    cardEl.innerText = "This card is no longer available.";
+    showBtn.style.display = "none";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    updateBackButton();
+    return;
+  }
+  const card = resolved.card;
 
   if (userInputMode === "text" || userInputMode === "draw") {
     cardEl.innerHTML = nl2br(card.a);
@@ -3016,12 +3367,20 @@ function showMultiComplete() {
   incorrectBtn.style.display = "none";
   showBtn.style.display = "block";
   markDoneBtn.style.display = "block";
+
+  // Clear out whatever the learner typed/drew on the final card instead of
+  // leaving it visible behind the "Selected Decks Complete!" message.
+  userAnswerArea.value = "";
+  userAnswerArea.style.display = "none";
+  drawBoxContainer.style.display = "none";
+  clearDrawCanvas();
+
   saveSession();
 }
 
 function gradeMulti(correct) {
   const ref = multiQueue[multiIndex];
-  if (!correct) multiRepeatQueue.push(ref);
+  if (!correct && repeatIncorrectEnabled) multiRepeatQueue.push(ref);
 
   correctBtn.style.display = "none";
   incorrectBtn.style.display = "none";
@@ -3170,6 +3529,10 @@ function importCSV() {
                             // counter-based name that could collide across files
     }
 
+    if (deckName === FOCUSED_DECK_NAME) {
+      deckName = `${deckName} (imported)`; // that name is reserved for the flag feature
+    }
+
     if (!data.decks[deckName]) {
       data.decks[deckName] = {
         cards: [],
@@ -3187,7 +3550,7 @@ function importCSV() {
 
         rows.forEach(r => {
           if (r.length >= 2 && (r[0].trim() || r[1].trim())) {
-            deck.cards.push({ q: r[0], a: r[1], img: null });
+            deck.cards.push({ id: genCardId(), q: r[0], a: r[1], img: null });
           }
         });
 
@@ -3229,14 +3592,18 @@ function exportCurrentDeck() {
   }
 
   const deck = data.decks[currentDeck];
-  if (deck.cards.length === 0) {
+  const cardsToExport = isFocusedDeck(currentDeck)
+    ? deck.cards.map((_, i) => resolveCardRef(currentDeck, i)).filter(Boolean).map(r => r.card)
+    : deck.cards;
+
+  if (cardsToExport.length === 0) {
     alert("This deck has no cards to export.");
     return;
   }
 
   let csvContent = "Question,Answer\n";
 
-  deck.cards.forEach(card => {
+  cardsToExport.forEach(card => {
     const question = `"${card.q.replace(/"/g, '""')}"`;
     const answer   = `"${card.a.replace(/"/g, '""')}"`;
     csvContent += `${question},${answer}\n`;
@@ -3253,7 +3620,7 @@ function exportCurrentDeck() {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 
-  alert(`✅ Exported "${currentDeck}" (${deck.cards.length} cards)\n\nSave this file to iCloud Drive for backup and sync.`);
+  alert(`✅ Exported "${currentDeck}" (${cardsToExport.length} cards)\n\nSave this file to iCloud Drive for backup and sync.`);
 }
 
 function exportAllDecks() {
@@ -3311,11 +3678,18 @@ function restoreFromBackup() {
               // Validate shape before accepting — an invalid deck used to be
               // able to sneak in and silently break startSession() later.
               if (incoming && Array.isArray(incoming.cards)) {
+                const isFocusedIncoming = deckName === FOCUSED_DECK_NAME;
+                if (!isFocusedIncoming) {
+                  // Backfill ids on any card that predates v1.11 (or came from
+                  // an older backup) so flagging can reliably reference it.
+                  incoming.cards.forEach(c => { if (c && !c.id) c.id = genCardId(); });
+                }
                 data.decks[deckName] = {
                   cards: incoming.cards,
                   mode: incoming.mode === "shuffle" ? "shuffle" : "sequential",
                   done: !!incoming.done,
-                  folder: typeof incoming.folder === "string" ? incoming.folder : null
+                  folder: typeof incoming.folder === "string" ? incoming.folder : null,
+                  isFocused: isFocusedIncoming
                 };
                 restoredCount++;
               } else {
@@ -3347,7 +3721,8 @@ function restoreFromBackup() {
         }
         else if (fileName.endsWith(".csv")) {
           // Single deck from CSV (reuse existing parser)
-          const deckName = file.name.replace(/\.csv$/i, "").trim() || file.name;
+          let deckName = file.name.replace(/\.csv$/i, "").trim() || file.name;
+          if (deckName === FOCUSED_DECK_NAME) deckName = `${deckName} (imported)`;
 
           if (!data.decks[deckName]) {
             data.decks[deckName] = {
@@ -3360,7 +3735,7 @@ function restoreFromBackup() {
           const rows = parseCSV(e.target.result);
           rows.forEach(r => {
             if (r.length >= 2 && (r[0].trim() || r[1].trim())) {
-              data.decks[deckName].cards.push({ q: r[0], a: r[1], img: null });
+              data.decks[deckName].cards.push({ id: genCardId(), q: r[0], a: r[1], img: null });
             }
           });
           restoredCount++;
@@ -3410,6 +3785,11 @@ function addCard() {
     return;
   }
 
+  if (isFocusedDeck(currentDeck)) {
+    alert("Focused Study cards are managed by flagging — add cards from their original deck.");
+    return;
+  }
+
   const q = document.getElementById("newQ").value.trim();
   const a = document.getElementById("newA").value.trim();
   const imgFile = document.getElementById("newImg").files[0];
@@ -3419,7 +3799,7 @@ function addCard() {
     return;
   }
 
-  const card = { q, a, img: null };
+  const card = { id: genCardId(), q, a, img: null };
   const deck = data.decks[currentDeck];
 
   const finish = () => {
@@ -3447,6 +3827,7 @@ function addCard() {
 
 function saveEdit() {
   if (!currentDeck || editingIndex === null) return;
+  if (isFocusedDeck(currentDeck)) return; // defensive — UI already disables this path
 
   const deck = data.decks[currentDeck];
   const newQ = document.getElementById("editQ").value.trim();
@@ -3489,11 +3870,16 @@ function saveEdit() {
 
 function deleteCard() {
   if (!currentDeck || editingIndex === null) return;
+  if (isFocusedDeck(currentDeck)) return; // defensive — UI already disables this path
 
   if (!confirm("Delete this card permanently?")) return;
 
   const deck = data.decks[currentDeck];
+  const removedId = deck.cards[editingIndex] ? deck.cards[editingIndex].id : undefined;
   deck.cards.splice(editingIndex, 1);
+
+  // Drop any Focused Study pointer(s) that referenced this now-deleted card.
+  removeFocusedRefsFor(currentDeck, removedId);
 
   save();
   renderCardList();
@@ -3770,6 +4156,9 @@ if (drawLinesToggleEl) drawLinesToggleEl.checked = drawLinesEnabled;
 
 const showBothStatusEl = document.getElementById("showBothStatus");
 if (showBothStatusEl) showBothStatusEl.textContent = showBothMode ? "ON" : "OFF";
+
+const repeatIncorrectStatusEl = document.getElementById("repeatIncorrectStatus");
+if (repeatIncorrectStatusEl) repeatIncorrectStatusEl.textContent = repeatIncorrectEnabled ? "ON" : "OFF";
 
 // Lets the user pull a new version from inside the app instead of having to
 // delete and reinstall it. service-worker.js's own SW already self-activates
