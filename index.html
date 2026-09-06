@@ -1,5 +1,19 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.12, SOC: Focused Study flag fixes — no more restarts, a
+<!-- Version 1.13, SOC: iOS/iPadOS Draw-mode text-selection fix.
+     On iPad/iPhone, drawing with a finger or Apple Pencil in the Draw
+     input mode could accidentally trigger Safari's native text-selection
+     / magnifier-loupe gesture over the draw canvas, hijacking the stroke
+     input. `touch-action: none` on #drawCanvas alone doesn't suppress
+     this — Safari's selection/callout gesture is a separate mechanism.
+     Added `-webkit-user-select: none`, `user-select: none`,
+     `-webkit-touch-callout: none`, and `-webkit-tap-highlight-color:
+     transparent` to .draw-canvas-wrap and its child canvases, plus
+     `touch-action: none` on the wrapper itself (previously only set on
+     #drawCanvas), and the same user-select/callout suppression on
+     body.drawing-mode as a belt-and-suspenders guard, so drawing no
+     longer triggers selection/callout anywhere in that mode.
+     ----------------------------------------------------------------
+     Version 1.12, SOC: Focused Study flag fixes — no more restarts, a
      persistent-looking icon, and a new inline position.
      (1) NO MORE RESTARTS ON FLAG/UNFLAG: flagging a card used to only
      show up in the Focused Study deck after an explicit "Restart Deck",
@@ -341,6 +355,16 @@ body.drawing-mode .main-content-area {
   padding: 50px 12px 150px;
 }
 
+/* iOS/iPadOS: a finger or Apple Pencil in the draw box could otherwise
+   trigger Safari's native text-selection/magnifier gesture, hijacking the
+   stroke. touch-action:none on the canvas alone doesn't suppress that —
+   it's a separate selection/callout mechanism that needs its own opt-out. */
+body.drawing-mode {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
 img {
   max-width:100%;
   margin-top:10px;
@@ -668,6 +692,11 @@ input, textarea, select {
   border-radius: 12px;
   overflow: hidden;
   box-sizing: border-box;
+  touch-action: none;          /* so a stray touch here doesn't scroll the page */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none; /* iPad: suppress the selection/magnifier gesture */
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Two stacked canvases at the exact same size: a background one that only
@@ -679,6 +708,9 @@ input, textarea, select {
   display: block;
   width: 100%;
   height: 100%;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 #drawCanvas {
@@ -1285,7 +1317,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.12";
+const APP_VERSION = "1.13";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.

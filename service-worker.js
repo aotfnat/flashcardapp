@@ -1,12 +1,12 @@
 //service-worker.js Flashcard app
-//Version 1.12
+//Version 1.13
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     Focused Study flag fixes (no more restarts on flag/unflag, a
-//     persistent-looking flag icon, and its new inline position next to
-//     the card counter) get picked up by clients on their next
-//     "Check for Update" or fresh install.
+//     iOS/iPadOS Draw-mode fix (preventing Safari's text-selection/callout
+//     gesture from hijacking finger/Apple Pencil input in the draw box)
+//     gets picked up by clients on their next "Check for Update" or
+//     fresh install.
 
-const CACHE = "study-cards-v1.12";
+const CACHE = "study-cards-v1.13";
 
 const CORE_ASSETS = [
   "./",
