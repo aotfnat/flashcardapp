@@ -1,292 +1,4727 @@
-<!-- index.html Workout App -->
-<!-- Version 10.8, SOC: Added a "Keep Screen Awake" checkbox to the
-     Settings tab (#keep-screen-awake), backed by the Screen Wake Lock
-     API in app.js. Also added a hint line (#keep-screen-awake-hint)
-     that app.js fills in when the browser doesn't support the API. -->
-
+<!-- index.html Flashcard app-->
+<!-- Version 1.17, SOC: Draw-mode dropped-stroke root cause found + fixed.
+     On-device testing isolated the cause: writing "This" with Draw Debug
+     on showed only 2 of the ~4+ intended strokes ever produced a DOWN in
+     the log — the rest left no trace at all, meaning WebKit itself never
+     dispatched a pointerdown for them. Confirmed identically in a plain
+     Safari tab (ruling out the PWA/service-worker), and absent entirely
+     in Apple Notes on the same iPad with the same Pencil (ruling out an
+     OS/hardware cause). That isolates it to WebKit's Pointer Events
+     implementation for Apple Pencil specifically: Pointer Events carry an
+     extra hover-disambiguation step (for Pencil 2's hover-above-glass
+     support) that can apparently fail to recognize a new touch-down when
+     it follows a lift too quickly, and unlike a mishandled event this
+     leaves nothing for our code to react to.
+     FIX: switched the draw canvas to plain Touch Events (touchstart/
+     touchmove/touchend/touchcancel) on any touch-capable device, which
+     predate Pointer Events and have no such hover step. Touch Events also
+     keep targeting the element a touch started on for its full lifetime,
+     so the v1.14 setPointerCapture() workaround is no longer needed on
+     that path. handleTouchStart()/handleTouchMove()/handleTouchEnd() are
+     new; startStroke()/continueStroke()/endStroke() (the original Pointer
+     Events versions) are kept as a fallback for non-touch devices (mouse/
+     trackpad on desktop), chosen once at load via feature-detection
+     (drawUsesTouchEvents). Shared drawing math factored into
+     drawSegmentTo(); Draw Debug logging (touchToPointerLike()) works
+     against both paths unchanged.
+     ----------------------------------------------------------------
+     Version 1.16, SOC: Draw-mode dropped-stroke follow-up #2.
+     On-device Draw Debug logging (v1.15) showed that events the page DOES
+     receive are handled correctly — a full pointerdown → pointermove(s) →
+     pointerup → pointerleave sequence, in order, for the pointerId that
+     fired it. What's telling is what's absent: a ~1.75s gap between one
+     stroke's pointerup and the next stroke's pointerdown, with only a tiny
+     few-pixel scribble drawn in between — consistent with an entire
+     intended stroke never generating any DOM event at all, rather than an
+     event arriving and being mishandled. Since a genuinely dropped touch
+     leaves nothing in the log by definition, this points upstream of our
+     JS, to iPadOS/WebKit's touch delivery itself. Two changes, in that
+     light: (1) the debug logger itself was writing to the DOM
+     (textContent + scrollTop, which forces a layout read) synchronously
+     inside every pointer event handler — exactly the kind of main-thread
+     work that can make the browser drop touch samples under load, so the
+     tool could have been contributing to the very problem it's meant to
+     diagnose. logDrawEvent() now only pushes to an array; the actual
+     panel repaint is batched into a single requestAnimationFrame callback
+     via scheduleDrawDebugRender(). (2) #drawCanvas now forces its own GPU
+     compositor layer (`transform: translateZ(0)`, `will-change:
+     transform`) — a known workaround on iPad for dropped touch/pencil
+     input caused by a frequently-repainted canvas falling out of sync
+     with the compositor during fast input.
+     ----------------------------------------------------------------
+     Version 1.15, SOC: Draw-mode dropped-stroke follow-up.
+     Palm-rejection was ruled out by direct testing (issue persists even
+     with only pen or only hand touching, never both). Next candidate:
+     iOS Safari's page-level elastic overscroll ("rubber-band") bounce can
+     consume the very next touch as a "stop scrolling" gesture rather than
+     delivering it to page content as a normal touch — which would look
+     exactly like an intermittent dropped stroke-start on quick lift/
+     resume. Added `overscroll-behavior: none` on html/body to disable
+     that bounce chaining, and `touch-action: none` on .main-content-area
+     while in Draw mode so no incidental page-level pan can be in flight
+     near the draw box. Also added an opt-in "Draw Debug" tool (Settings
+     menu) since two prior fixes (v1.13 selection/callout, v1.14 pointer
+     capture + coalesced events) didn't resolve it on-device: when
+     enabled, every pointerdown/move/up/cancel/leave on the draw canvas is
+     logged with its timestamp/pointerId/pointerType/coordinates to a
+     small on-screen panel above the bottom bar, so if this fix doesn't
+     work either, the next step is reading real event data off the
+     iPad directly instead of guessing again.
+     ----------------------------------------------------------------
+     Version 1.14, SOC: Draw-mode dropped-stroke fix.
+     Reports of missing/broken input in the Draw box after lifting and
+     quickly resuming a stroke — much more pronounced with a stylus — traced
+     to two causes: (1) a fast lift/re-touch can momentarily land the
+     contact point just outside the canvas's exact bounds, firing
+     pointerleave and ending the stroke early, so whatever comes right after
+     the resume never gets a fresh pointerdown paired correctly; and (2) a
+     stylus (Apple Pencil in particular) samples position far faster than
+     the browser fires pointermove, so fast strokes were only ever drawn at
+     the coarser callback rate, skipping segments in between. Fixed via (1)
+     setPointerCapture()/releasePointerCapture() in startStroke()/
+     endStroke() so all events for that pointer keep routing to the canvas
+     regardless of exact position until it's actually lifted, and (2)
+     continueStroke() now draws every point from
+     event.getCoalescedEvents() (falling back to the event itself if
+     unsupported) instead of only the event's own single position.
+     ----------------------------------------------------------------
+     Version 1.13, SOC: iOS/iPadOS Draw-mode text-selection fix.
+     On iPad/iPhone, drawing with a finger or Apple Pencil in the Draw
+     input mode could accidentally trigger Safari's native text-selection
+     / magnifier-loupe gesture over the draw canvas, hijacking the stroke
+     input. `touch-action: none` on #drawCanvas alone doesn't suppress
+     this — Safari's selection/callout gesture is a separate mechanism.
+     Added `-webkit-user-select: none`, `user-select: none`,
+     `-webkit-touch-callout: none`, and `-webkit-tap-highlight-color:
+     transparent` to .draw-canvas-wrap and its child canvases, plus
+     `touch-action: none` on the wrapper itself (previously only set on
+     #drawCanvas), and the same user-select/callout suppression on
+     body.drawing-mode as a belt-and-suspenders guard, so drawing no
+     longer triggers selection/callout anywhere in that mode.
+     ----------------------------------------------------------------
+     Version 1.12, SOC: Focused Study flag fixes — no more restarts, a
+     persistent-looking icon, and a new inline position.
+     (1) NO MORE RESTARTS ON FLAG/UNFLAG: flagging a card used to only
+     show up in the Focused Study deck after an explicit "Restart Deck",
+     and unflagging a card while browsing the Focused deck itself
+     restarted that whole pass from card 1. Both now patch the affected
+     study queue directly instead: insertFocusedCardIntoSessions() appends
+     the newly-flagged card's index onto the end of whichever queue
+     currently (or most recently) represents the Focused deck's pass —
+     live, if it's actively being studied, or its saved resume point
+     otherwise. removeFocusedCardFromSessions() does the reverse for an
+     unflag: it reindexes every queue that might hold indices into the
+     Focused deck's cards array (shifting anything after the removed slot
+     down by one, exactly mirroring the splice that just happened to
+     fd.cards) so the *same* sessionIndex now naturally lands on the next
+     card — advanceSingleAfterFocusedRemoval()/
+     advanceMultiAfterFocusedRemoval() then just render it, with no
+     shuffle and no lost position.
+     (2) PERSISTENT, VISIBLE FLAG STATE: the flag button previously used
+     the 🚩 emoji with a CSS `color` rule meant to highlight it once
+     flagged — but colored emoji glyphs ignore CSS color/fill entirely, so
+     the "highlight" never actually appeared outside of the button's own
+     momentary :active tap feedback. Replaced with a two-part inline SVG
+     (a pole `<line>` plus a banner `<path>`) so the banner genuinely
+     toggles between an outline and a solid red fill via the existing
+     `.flagged` class — and since refreshFlagButton() already recomputes
+     this from isFlagged() on every card transition, the correct state now
+     actually shows on every visit to a card, every pass, every time.
+     (3) REPOSITIONED INLINE: the flag button moved out of its own
+     separately-fixed-position spot into a new `.top-right-controls` flex
+     row shared with the card counter and back/flip button, sitting
+     immediately to the left of the counter — replacing fragile
+     hand-tuned `right: calc(...)` offsets for all three with normal
+     flexbox layout.
+     ----------------------------------------------------------------
+     Version 1.11, SOC: Focused Study flag, full-screen menu, longer
+     auto-close grace period, optional repeat-incorrect, and input-box
+     clearing on deck completion.
+     (1) FOCUSED STUDY DECK: a small flag button (🚩) now sits top-right
+     during study. Tapping it while a question/answer is showing adds that
+     exact card to an auto-created "Focused Study" deck (or removes it if
+     already flagged). Cards keep a stable `id` (assigned on creation, and
+     lazily backfilled for older saved cards via loadData()'s migration
+     pass) so the Focused Study deck can store lightweight {refDeck,refId}
+     pointers into their real source deck instead of duplicating card data
+     — edits to the original always show up, and there's only ever one
+     copy of the truth. resolveCardRef()/currentCardIdentity() are the two
+     new single sources of truth used everywhere a card actually needs to
+     be displayed or identified, so this plugs into the existing single-
+     and multi-deck study code paths (showQuestion/showAnswer/
+     showMultiQuestion/showMultiAnswer) with minimal duplication. The
+     Focused Study deck auto-deletes itself once its last card is
+     unflagged. Add/Edit Cards is disabled for this deck (mirroring how
+     multi-select/multi-study already disable it), and Export Current
+     Deck resolves the real cards first so it doesn't export raw pointers.
+     (2) FULL-SCREEN MENU: the sidebar now expands to the full viewport
+     width instead of a fixed 260px, giving long deck/folder names room to
+     breathe. The floating "×" close button moves to the top-right corner
+     to match.
+     (3) AUTO-CLOSE GRACE PERIOD: extended from the previous 60s constant
+     (which didn't match the "15 seconds" copy shown in the UI) to a
+     clearly-stated 30 seconds, with the on-screen message text corrected
+     to match.
+     (4) REPEAT INCORRECT CARDS: new Settings toggle (default ON, matching
+     prior behavior) controlling whether missed cards re-queue at the end
+     of a pass. Wired into both grade() and gradeMulti().
+     (5) INPUT BOX CLEARING ON DECK COMPLETE: showDeckComplete() and
+     showMultiComplete() now clear/hide the free-text answer box and wipe
+     the draw canvas, instead of leaving the last card's leftover input
+     visible behind the "Deck Complete!" message.
+     ----------------------------------------------------------------
+     Version 1.10, SOC: Drag-and-drop refinements + Decks menu cleanup.
+     (1) SAME-POSITION BUG: dropping a deck onto the bottom half of the
+     deck directly above it used to send it to the end of the list,
+     because that target's very next DOM sibling was the dragged deck
+     itself. nextSiblingName() now walks past any siblings that are part
+     of the dragged group when looking for "what comes after", so this
+     resolves back to the deck's original spot instead.
+     (2) FOLDER DIRECTION BUG: dragging a folder onto another folder used
+     to always insert BEFORE the target regardless of drop position,
+     making it impossible to drag a folder to the bottom. computeDragTarget
+     (replacing computeDropTarget) now checks which half of the target
+     folder's header the pointer is over, exactly like deck-to-deck
+     reordering already did.
+     (3) MIXED REORDERING: folders and decks can now be reordered relative
+     to each other at the root level — a folder can be dragged past a
+     root-level deck (and vice versa) instead of being blocked outright.
+     Dragging a folder onto something inside another folder's content
+     redirects to "just before/after that containing folder"
+     (folderRelativeToFolder()), since folders never nest.
+     (4) DROP-INTO vs REORDER on folder headers: hovering a folder's
+     header is now split into thirds — top/bottom thirds reorder the
+     dragged deck(s) as a root-level sibling just before/after the folder
+     (using the same green line indicator as deck-to-deck reordering, via
+     shared .drag-over-top/.drag-over-bottom CSS), while the middle third
+     drops them INTO the folder (dashed outline, unchanged). This also
+     finally lets a deck be dragged past a folder without always ending up
+     inside it. getRowUnderPoint()/computeDragTarget() are now the single
+     source of truth for both the live indicator (on pointermove) and the
+     actual drop (on release), so what's shown always matches what happens.
+     (5) Decks menu: "Select Decks" moved to after Shuffle and renamed to
+     "Select" so it and Mark Done/Restart Deck/Shuffle read as one
+     consistent row of four buttons with uniform spacing (the "N selected"
+     label moved below them so it no longer interrupts that spacing).
+      -->
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Fitness App PWA</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>FlashCards</title>
+<link rel="manifest" href="manifest.json">
 
-    <link rel="stylesheet" href="./styles.css">
-    <link rel="manifest" href="./manifest.json">
-    <meta name="theme-color" content="#4CAF50">
+<style>
+:root {
+  --bg: #111111;
+  --text: #ffffff;
+  --muted-text: #aaaaaa;
+  --border-color: #333333;
+  --sidebar-bg: #222222;
+  --section-bg: #333333;
+  --section-bg-hover: #444444;
+  --content-bg: #222222;
+  --icon-color: #ffffff;
+  --icon-hover-bg: rgba(255, 255, 255, 0.15);
+  --deck-hover-bg: #333333;
+  --deck-active-bg: #444444;
+  --modal-box-bg: #222222;
+  --modal-name-bg: #111111;
+  --answer-bg: #222222;
+  --answer-border: #555555;
+}
 
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Fitness App">
-    <link rel="apple-touch-icon" href="./icons/icon-192x192.png">
+body.light-mode {
+  --bg: #f4f4f4;
+  --text: #1a1a1a;
+  --muted-text: #666666;
+  --border-color: #dddddd;
+  --sidebar-bg: #ffffff;
+  --section-bg: #e6e6e6;
+  --section-bg-hover: #d8d8d8;
+  --content-bg: #f0f0f0;
+  --icon-color: #1a1a1a;
+  --icon-hover-bg: rgba(0, 0, 0, 0.08);
+  --deck-hover-bg: #ececec;
+  --deck-active-bg: #e0e0e0;
+  --modal-box-bg: #ffffff;
+  --modal-name-bg: #f0f0f0;
+  --answer-bg: #ffffff;
+  --answer-border: #cccccc;
+}
+
+html, body {
+  overscroll-behavior: none;
+}
+
+body {
+  margin:0;
+  font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  text-align:center;
+  overflow-x:hidden;
+}
+
+.bottom-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 16px 20px;
+  background: var(--bg);
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+  box-sizing: border-box;
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}
+
+button {
+  padding: 16px;
+  margin: 0;               /* remove previous margin */
+  font-size: 17px;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 420px;
+  box-sizing: border-box;
+  touch-action: manipulation;   /* better touch response */
+}
+
+@media (min-width: 400px) {
+  .bottom-bar {
+    flex-direction: row;
+    justify-content: center;
+    gap: 16px;
+    padding: 16px 24px;
+  }
+  
+  .bottom-bar button {
+    width: auto;
+    min-width: 140px;
+    flex: 1;
+    max-width: 220px;
+  }
+}
+
+/* Top-right icon row: flag (outline/fill toggle) — card counter —
+   back/flip button, laid out with flexbox instead of each being
+   separately hand-positioned, so the flag icon can sit inline to the
+   left of the counter without any fragile width math. */
+.top-right-controls {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: calc(16px + env(safe-area-inset-right));
+  z-index: 1999;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.top-right-controls .top-icon-btn {
+  position: static;
+}
+
+#backFlipBtn {
+  /* IMPORTANT: Hide by default — shown only once a deck is selected */
+  display: none;
+  opacity: 0;
+
+  transition: opacity 0.2s, transform 0.15s;
+}
+
+#backFlipBtn:hover,
+#backFlipBtn:active {
+  background: var(--icon-hover-bg);
+  transform: scale(1.08);
+}
+
+/* Focused Study flag — an outline flag icon that fills in solid red once
+   the current card is flagged. Rendered as inline SVG (rather than the
+   🚩 emoji) so its appearance actually responds to the .flagged state —
+   colored emoji glyphs ignore CSS `color`/`fill` entirely, which is why
+   an emoji-based flag never visibly toggled. Shown only while an actual
+   question or answer is on screen (see currentCardIdentity()/
+   refreshFlagButton() in the script), so it's absent on the "Tap to
+   begin" and "Deck Complete!" states. */
+#flagBtn {
+  display: none;
+}
+
+#flagBtn svg {
+  display: block;
+}
+
+#flagBtn line {
+  stroke: var(--icon-color);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+#flagBtn path {
+  fill: none;
+  stroke: var(--icon-color);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  transition: fill 0.15s ease, stroke 0.15s ease;
+}
+
+#flagBtn.flagged path {
+  fill: #ff5252;
+  stroke: #ff5252;
+}
+
+#showBtn { background:#444; color:white; }
+
+#correctBtn {
+  background: #1e8e3e;
+  color: white;
+  font-weight: 600;           /* slightly bolder */
+}
+
+#incorrectBtn {
+  background: #c62828;
+  color: white;
+  font-weight: 600;
+}
+
+#correctBtn:hover,
+#incorrectBtn:hover {
+  opacity: 0.95;
+}
+
+.main-content-area {
+  min-height: 100vh;
+  padding: 60px 20px 180px;   /* top for menu button, bottom for bar */
+  box-sizing: border-box;
+}
+
+.main-content-area,
+#card,
+#card * {
+  pointer-events: auto;           /* default anyway */
+}
+
+#card {
+  position: relative;             /* creates new stacking context */
+  z-index: 10;                    /* low enough not to cover fixed buttons */
+}
+
+#card {
+  margin: 80px 20px 20px;
+  font-size: 22px;
+  min-height: 120px;
+  
+  /* Core changes */
+  text-align: center;           /* centers inline content (including the inner block) */
+  line-height: 1.45;
+  
+  /* Let the inner content take only the width it needs */
+  display: flex;
+  justify-content: center;      /* horizontal centering */
+  align-items: center;          /* vertical centering — optional but nice */
+}
+
+#card > div.inner {             /* ← we'll wrap the text in a div */
+  text-align: left;             /* left-align the actual lines */
+  max-width: 90%;               /* or 85% / 480px / whatever feels best */
+  width: fit-content;           /* shrinks to content width, but won't exceed max-width */
+}
+
+/* Active only while User Input Mode is set to "Draw" — shrinks the
+   question card's own buffers so the drawing canvas below it gets as much
+   vertical space as possible. The canvas's actual on-screen height is
+   still computed in JS (sizeDrawCanvas) from the live gap between it and
+   the bottom bar, so these are just about freeing space above it. */
+body.drawing-mode #card {
+  margin: 50px 16px 6px;
+  min-height: 0;
+}
+
+body.drawing-mode .main-content-area {
+  padding: 50px 12px 150px;
+  touch-action: none;
+}
+
+/* iOS/iPadOS: a finger or Apple Pencil in the draw box could otherwise
+   trigger Safari's native text-selection/magnifier gesture, hijacking the
+   stroke. touch-action:none on the canvas alone doesn't suppress that —
+   it's a separate selection/callout mechanism that needs its own opt-out. */
+body.drawing-mode {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+img {
+  max-width:100%;
+  margin-top:10px;
+  border-radius:8px;
+}
+
+.top-icon-btn {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  line-height: 44px;
+  text-align: center;
+  background: none;
+  color: var(--icon-color);
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s;
+}
+
+.top-icon-btn:hover,
+.top-icon-btn:active {
+  background: var(--icon-hover-bg);
+  transform: scale(1.08);
+}
+
+.menuBtn {
+  left: calc(16px + env(safe-area-inset-left));
+  z-index: 2000;
+}
+
+/* Hide the hamburger while the menu is open — its own close (×) button,
+   which floats independently of the sidebar's scroll position, takes over. */
+.sidebar.open ~ .menuBtn {
+  display: none;
+}
+
+.card-counter {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--muted-text);
+  background: rgba(0,0,0,0.4);
+  padding: 6px 12px;
+  border-radius: 20px;
+  min-width: 60px;
+  text-align: center;
+  line-height: 1.3;
+  cursor: pointer;                                   /* tappable: opens "Go to Card" */
+  transition: opacity 0.25s;
+}
+
+/* Hides the entire flag/counter/back-flip row while the menu is open. */
+.sidebar.open ~ .top-right-controls {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+
+/* Floating "×" close button for the menu. Kept OUT of .sidebar in the DOM
+   (as a later sibling) rather than nested inside it: .sidebar always has a
+   `transform` applied (even translateX(0) when open), and any transformed
+   ancestor becomes the containing block for position:fixed descendants —
+   which would make a nested fixed close button scroll away with the
+   sidebar's content instead of staying put. As a sibling, it's genuinely
+   fixed to the viewport and shown/hidden purely via the .sidebar.open
+   sibling selector, matching the pattern already used for #backFlipBtn. */
+.closeMenuBtn {
+  left: auto;
+  right: calc(16px + env(safe-area-inset-right));
+  z-index: 2001;
+  font-size: 32px;
+  display: none;
+}
+
+.sidebar.open ~ .closeMenuBtn {
+  display: block;
+}
+
+.sidebar {
+  position:fixed;
+  top:0;
+  left:0;
+  width:100%;
+  height:100%;
+  background:var(--sidebar-bg);
+  transform:translateX(-100%);
+  transition:transform .3s ease;
+  padding:20px;
+  box-sizing:border-box;
+  overflow-y:auto;
+  z-index:1000;
+}
+
+.sidebar.open { transform:translateX(0); }
+
+input, textarea, select {
+  width:100%;
+  margin:5px 0;
+  padding:8px;
+  border-radius:6px;
+  border:none;
+}
+
+.deckItem {
+  padding: 10px 12px;
+  cursor: pointer;
+  border-radius: 8px;
+  margin: 4px 0;
+  transition: all 0.15s ease;
+}
+
+.deckItem:hover {
+  background: var(--deck-hover-bg);
+}
+
+.deckItem.active {
+  background: var(--deck-active-bg);
+  color: #8bc34a;           /* light green for success/active feel */
+  font-weight: bold;
+  border-left: 4px solid #8bc34a;
+  padding-left: 8px;        /* compensate for border width */
+}
+
+.deckItem.done {
+  color: #66bb6a;
+}
+
+.deckItem.done::after {
+  content: " ✔";
+  color: #8bc34a;
+}
+
+.deckItem.done.active {
+  background: #2e7d32;      /* darker green when both done + active */
+  border-left-color: #a5d6a7;
+}
+
+.collapsible-section {
+  margin: 12px 0;
+}
+
+.collapsible-header {
+  margin: 0;
+  padding: 12px 16px;
+  background: var(--section-bg);
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.collapsible-header:hover {
+  background: var(--section-bg-hover);
+}
+
+.collapsible-header::after {
+  content: "▾";               /* down arrow when collapsed */
+  font-size: 1.2em;
+  transition: transform 0.25s ease;
+}
+
+.collapsible-section.open .collapsible-header::after {
+  transform: rotate(180deg);   /* up arrow when expanded */
+}
+
+.collapsible-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease-out, padding 0.3s ease-out;
+  padding: 0 16px;
+  background: var(--content-bg);
+  border-radius: 0 0 8px 8px;
+}
+
+.collapsible-section.open .collapsible-content {
+  max-height: 2000px;          /* large enough for many cards + editor */
+  padding: 16px;
+}
+
+.editor-buttons {
+  display: flex;
+  flex-direction: column;        /* stack vertically */
+  gap: 10px;                     /* space between buttons */
+  margin-top: 16px;
+}
+
+.editor-buttons button {
+  width: 100%;                   /* full width of the sidebar content area */
+  padding: 14px;
+  font-size: 17px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* Specific colors - override your global button styles if needed */
+.editor-buttons button:nth-child(1) {  /* Save */
+  background: #1e8e3e;           /* green */
+  color: white;
+}
+
+.editor-buttons button:nth-child(2) {  /* Cancel */
+  background: #555;              /* neutral gray */
+  color: white;
+}
+
+.editor-buttons button:nth-child(3) {  /* Delete */
+  background: #c62828;           /* red */
+  color: white;
+}
+
+.editor-buttons button:hover {
+  opacity: 0.92;
+}
+
+.qa-question {
+  margin-bottom: 4px;
+}
+
+.qa-divider {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+.qa-answer-label {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted-text);
+  margin-bottom: 4px;
+}
+
+.qa-answer {
+  color: #8bc34a;
+}
+
+#userAnswerArea {
+  display: none;
+  width: 100%;
+  max-width: 500px;
+  margin: 24px auto 16px;
+  padding: 16px;
+  font-size: 20px;
+  line-height: 1.5;
+  min-height: 160px;
+  background: var(--answer-bg);
+  color: var(--text);
+  border: 2px solid var(--answer-border);
+  border-radius: 12px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+#userAnswerArea:focus {
+  border-color: #8bc34a;
+  outline: none;
+}
+
+/* Draw box — the "Draw" option under User Input Mode. Freestyle writing/
+   drawing on the question card, with an optional ruled-lines background. */
+#drawBoxContainer {
+  display: none;               /* toggled to "flex" from JS when Draw mode is active */
+  flex-direction: column;
+  width: 100%;
+  max-width: 600px;
+  margin: 16px auto 8px;
+  box-sizing: border-box;
+  padding: 0 4px;
+}
+
+.draw-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  gap: 10px;
+}
+
+.draw-lines-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  color: var(--muted-text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.draw-lines-toggle input {
+  width: auto;
+  margin: 0;
+}
+
+#clearDrawBtn {
+  width: auto;
+  padding: 8px 16px;
+  margin: 0;
+  font-size: 14px;
+  border: none;
+  border-radius: 8px;
+  background: #555;
+  color: white;
+  cursor: pointer;
+}
+
+.draw-canvas-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 160px;
+  background: var(--answer-bg);
+  border: 2px solid var(--answer-border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-sizing: border-box;
+  touch-action: none;          /* so a stray touch here doesn't scroll the page */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none; /* iPad: suppress the selection/magnifier gesture */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Two stacked canvases at the exact same size: a background one that only
+   ever holds the optional ruled lines, and a transparent one on top that
+   captures the learner's actual strokes. Kept separate so switching the
+   ruled-lines option on/off repaints just the background layer and never
+   erases anything the learner has already drawn. */
+.draw-canvas-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+#drawCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: transparent;
+  touch-action: none;          /* so drawing doesn't also scroll the page */
+  /* Promotes this canvas to its own compositor layer. On some iPads,
+     leaving a frequently-repainted canvas on the same layer as surrounding
+     content can get its touch/pencil sampling out of sync with the
+     compositor, which shows up as dropped ink during fast input. Forcing
+     its own layer is a known workaround for that class of bug. */
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+#autoCloseMessage {
+  position: fixed;
+  top: calc(60px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.85);
+  color: #8bc34a;
+  padding: 10px 18px;
+  border-radius: 20px;
+  font-size: 15px;
+  font-weight: 500;
+  z-index: 3000;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Top-level accordion sections in the menu: Decks, Add/Edit, Import/Export,
+   Settings. Kept as a distinct class from .collapsible-section (used for
+   the nested "Edit Cards" sub-section) so the two accordions don't interfere
+   with each other's JS or CSS selectors. */
+.menu-section {
+  margin: 14px 0;
+}
+
+.menu-section-header {
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--section-bg);
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  text-align: left;
+  font-size: 17px;
+}
+
+.menu-section-header:hover {
+  background: var(--section-bg-hover);
+}
+
+.menu-section-header::after {
+  content: "▾";
+  font-size: 1.1em;
+  margin-left: 8px;
+  transition: transform 0.25s ease;
+  flex-shrink: 0;
+}
+
+.menu-section.open .menu-section-header::after {
+  transform: rotate(180deg);
+}
+
+.menu-section-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease-out, padding 0.3s ease-out;
+  padding: 0 16px;
+  background: var(--content-bg);
+  border-radius: 0 0 8px 8px;
+  text-align: left;
+}
+
+.menu-section.open .menu-section-content {
+  max-height: 3000px;   /* generous ceiling so long card lists never clip */
+  padding: 16px;
+}
+
+.menu-section-content h4 {
+  margin: 16px 0 6px;
+  color: var(--muted-text);
+  font-size: 15px;
+}
+
+.menu-section-content h4:first-child {
+  margin-top: 0;
+}
+
+/* Gives adjacent buttons within a menu section (Mark Done/Restart/Shuffle,
+   Add Deck/Delete Deck, Export Current/Export All, etc.) breathing room —
+   without this they sat flush against each other and looked like they were
+   overlapping on narrower phone screens. Scoped to menu-section-content so
+   it doesn't add extra spacing inside .editor-buttons, which already has
+   its own flex gap. */
+.menu-section-content button + button {
+  margin-top: 10px;
+}
+
+.deck-context-label {
+  font-size: 14px;
+  color: var(--muted-text);
+  text-align: left;
+  margin: 0 0 8px;
+  word-break: break-word;
+}
+
+.deck-context-label strong {
+  color: #8bc34a;
+}
+
+/* Delete Deck confirmation flow: a two-step modal (pick deck, then confirm
+   by name) so a long deck name always has room to wrap instead of being
+   clipped the way it could be in a native confirm()/prompt() dialog. */
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 5000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.modal-overlay.open {
+  display: flex;
+}
+
+.modal-box {
+  background: var(--modal-box-bg);
+  border-radius: 14px;
+  padding: 22px;
+  width: 100%;
+  max-width: 420px;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.modal-box h3 {
+  margin: 0 0 12px;
+}
+
+.modal-box p {
+  margin: 0 0 10px;
+  color: var(--muted-text);
+}
+
+.deck-name-display {
+  font-size: 18px;
+  font-weight: bold;
+  color: #8bc34a;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  background: var(--modal-name-bg);
+  padding: 12px 14px;
+  border-radius: 8px;
+  margin: 4px 0 16px;
+}
+
+.modal-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.modal-buttons button {
+  flex: 1;
+  width: auto;
+  max-width: none;
+  padding: 12px;
+}
+
+/* ---------------------------------------------------------------------
+   Folders, drag-and-drop reordering, and multi-select (v1.9)
+   --------------------------------------------------------------------- */
+
+.deckItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.deck-label {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drag-handle {
+  flex-shrink: 0;
+  cursor: grab;
+  touch-action: none;
+  padding: 4px 6px;
+  margin: -4px -2px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--muted-text);
+  user-select: none;
+}
+
+.deck-select-checkbox {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.deckItem.selected {
+  outline: 2px solid #8bc34a;
+  outline-offset: -2px;
+}
+
+.folderItem {
+  margin: 6px 0;
+}
+
+.folder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--section-bg);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.folder-header:hover {
+  background: var(--section-bg-hover);
+}
+
+.folderItem.contains-active .folder-header {
+  border-left: 3px solid #8bc34a;
+  padding-left: 9px;
+}
+
+.folder-arrow {
+  flex-shrink: 0;
+  width: 14px;
+  display: inline-block;
+}
+
+.folder-label {
+  flex: 1;
+  text-align: left;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-delete {
+  flex-shrink: 0;
+  color: var(--muted-text);
+  padding: 2px 8px;
+  font-size: 15px;
+}
+
+.folder-delete:hover {
+  color: #c62828;
+}
+
+.folder-content {
+  display: none;
+  padding-left: 20px;
+  margin-top: 4px;
+}
+
+.folderItem.open > .folder-content {
+  display: block;
+}
+
+.drag-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 6000;
+  background: var(--deck-active-bg);
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  opacity: 0.92;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+body.dragging-active {
+  cursor: grabbing;
+}
+
+.deckItem.drag-over-top,
+.folder-header.drag-over-top {
+  box-shadow: inset 0 3px 0 0 #8bc34a;
+}
+
+.deckItem.drag-over-bottom,
+.folder-header.drag-over-bottom {
+  box-shadow: inset 0 -3px 0 0 #8bc34a;
+}
+
+.folder-header.drag-over-inside,
+.folder-content.drag-over-inside {
+  outline: 2px dashed #8bc34a;
+  outline-offset: -2px;
+}
+
+#multiSelectCount {
+  display: none;
+}
+
+#addEditFormArea.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+#addEditDisabledNote {
+  display: none;
+}
+
+</style>
 </head>
 <body>
-<div id="app">
-    <main class="content-area">
-        <!-- CALENDAR -->
-        <div id="calendar-section" class="tab-content active">
-            <h2><button class="section-menu-btn" onclick="toggleMenu()">☰</button> 📅 Calendar</h2>
-            <div id="calendar-view"></div>
-            <div class="update-row">
-                <button class="update-btn" onclick="checkForUpdate()">🔄 Check for App Update</button>
-                <span id="update-status" class="update-status"></span>
-            </div>
-            <p id="app-version-label" class="app-version-label"></p>
-        </div>
+<script>
+// Applied immediately (before the sidebar/card markup even renders) so a
+// saved "light" preference doesn't flash dark for a moment on load. The
+// main script below re-reads this class rather than re-deciding the theme.
+(function() {
+  try {
+    if (localStorage.getItem('flashcardsTheme') === 'light') {
+      document.body.classList.add('light-mode');
+    }
+  } catch (e) { /* localStorage unavailable — default to dark */ }
+})();
+</script>
 
-        <!-- PLAN -->
-        <div id="plan-section" class="tab-content">
-            <div class="plan-header">
-                <div class="plan-header-row">
-                    <span class="plan-header-title"><button class="section-menu-btn" onclick="toggleMenu()">☰</button> 📋 Plan</span>
-                    <div class="plan-program-controls">
-                        <select id="program-select" class="prog-select plan-program-select" onchange="onProgramSelectChange(this.value)"></select>
-                        <button class="icon-btn" onclick="renameCurrentProgram()" title="Rename program">✏️</button>
-                        <button class="icon-btn danger" onclick="deleteCurrentProgram()" title="Delete program">🗑</button>
-                        <button class="icon-btn" onclick="addProgram()" title="Add program">➕</button>
-                    </div>
-                </div>
-            </div>
-            <div id="weekly-plan"></div>
-            <button onclick="addWorkout()">＋ Add Workout</button>
-            <button onclick="savePlanWithAlert()">💾 Save Plan</button>
-            <div class="backup-row">
-                <button class="backup-btn export-btn" onclick="exportPlanCSV()">📤 Export to CSV</button>
-                <button class="backup-btn import-btn" onclick="document.getElementById('csv-import-input').click()">📥 Import CSV</button>
-            </div>
-            <input type="file" id="csv-import-input" accept=".csv" style="display:none" onchange="importPlanCSV(event)">
-        </div>
 
-        <!-- WORKOUT -->
-        <div id="workout-section" class="tab-content">
+<div class="sidebar" id="sidebar">
+  <h2 style="text-align:left; margin:0 0 12px;">Menu</h2>
 
-            <!-- Sticky HUD -->
-            <div id="workout-hud">
-                <!-- Left cell: menu + elapsed + phase label + work total -->
-                <div class="hud-cell">
-                    <div class="hud-label">
-                        <button id="menu-btn" onclick="toggleMenu()" aria-label="Open menu">☰</button>
-                        <span>⏱ Elapsed</span>
-                    </div>
-                    <div class="hud-elapsed-row">
-                        <div id="lapsed-time" class="hud-time">00:00</div>
-                        <div class="hud-elapsed-meta">
-                            <div id="hud-workout-phase" class="hud-phase-label"></div>
-                            <div id="hud-work-total" class="hud-work-label"></div>
-                        </div>
-                    </div>
-                </div>
+  <!-- DECKS: expanded by default on initial load -->
+  <div class="menu-section open" id="sectionDecks">
+    <h3 class="menu-section-header" onclick="toggleMenuSection('sectionDecks')">Decks</h3>
+    <div class="menu-section-content">
+      <div id="deckList"></div>
 
-                <!-- Right cell: Pause/Resume + Skip Rest (top-left) + phase label + timer -->
-                <div class="hud-cell hud-right" onclick="openTimerDrawer()" style="cursor:pointer;">
-                    <div class="hud-timer-top-row">
-                        <button id="pause-resume-btn" class="pause-resume-btn"
-                            onclick="event.stopPropagation(); pauseResumeTimer()"
-                            style="display:none;">⏸</button>
-                        <button id="skip-rest-btn" class="pause-resume-btn skip-rest-btn"
-                            onclick="event.stopPropagation(); skipToEndOfRest()"
-                            style="display:none;" title="Skip to end of rest">⏭</button>
-                        <div id="timer-phase-label" class="hud-label">⏱ Timer</div>
-                    </div>
-                    <div id="timer" class="hud-time">--:--</div>
-                </div>
-            </div>
+      <button onclick="markDone()" id="markDoneMenuBtn">Mark Done ✔</button>
+      <button onclick="restartDeck()" id="restartDeckMenuBtn">Restart Deck</button>
+      <button onclick="toggleMode()" id="shuffleMenuBtn">Shuffle: <span id="shuffleModeStatus">–</span></button>
+      <button onclick="toggleMultiSelect()">Select: <span id="multiSelectStatus">OFF</span></button>
 
-            <!-- Current exercise -->
-            <div id="exercise-list"></div>
-
-        </div>
-
-        <!-- PROGRESS -->
-        <div id="progress-section" class="tab-content">
-            <h2><button class="section-menu-btn" onclick="toggleMenu()">☰</button> 📈 Progress</h2>
-            <div class="backup-row">
-                <button class="backup-btn export-btn" onclick="exportProgressCSV()">📤 Export to CSV</button>
-                <button class="backup-btn import-btn" onclick="document.getElementById('progress-import-input').click()">📥 Import CSV</button>
-            </div>
-            <input type="file" id="progress-import-input" accept=".csv" style="display:none" onchange="importProgressCSV(event)">
-            <!-- Two stacked Work/Power charts -->
-            <div id="progress-charts-container"></div>
-            <!-- Session log -->
-            <div id="progress-log"></div>
-        </div>
-
-        <!-- Settings -->
-        <div id="settings-section" class="tab-content">
-            <h2><button class="section-menu-btn" onclick="toggleMenu()">☰</button> ⚙️ Settings</h2>
-            <div class="settings-form">
-                <label>Body Weight
-                    <div class="settings-input-row">
-                        <input type="number" id="user-weight" min="0" step="0.1" placeholder="e.g. 180">
-                        <span class="settings-unit-label" id="weight-unit-label">lb</span>
-                    </div>
-                </label>
-                <label>Height
-                    <div class="settings-input-row">
-                        <input type="number" id="user-height" min="0" step="0.1" placeholder="e.g. 70">
-                        <span class="settings-unit-label" id="height-unit-label">in</span>
-                    </div>
-                </label>
-                <label>Weight Unit
-                    <select id="weight-unit" onchange="updateSettingsWeightLabel()">
-                        <option value="lb">Pounds (lb)</option>
-                        <option value="kg">Kilograms (kg)</option>
-                    </select>
-                </label>
-                <label>Height Unit
-                    <select id="height-unit" onchange="updateSettingsHeightLabel()">
-                        <option value="in">Inches (in)</option>
-                        <option value="cm">Centimetres (cm)</option>
-                    </select>
-                </label>
-                <p class="settings-hint">Body weight is used to calculate the load on exercises. Height is used to calculate distance traveled per rep for repetitive movements.</p>
-                <label class="settings-checkbox-row">
-                    <span>📈 Show Trend Lines on Progress Charts</span>
-                    <input type="checkbox" id="show-trend-lines">
-                </label>
-                <label class="settings-checkbox-row">
-                    <span>🔆 Keep Screen Awake (prevent auto-lock/dimming)</span>
-                    <input type="checkbox" id="keep-screen-awake">
-                </label>
-                <p id="keep-screen-awake-hint" class="settings-hint"></p>
-                <button onclick="saveSettings()">💾 Save Settings</button>
-            </div>
-
-            <!-- Custom Exercise Library -->
-            <h3 style="margin:20px 0 8px;font-size:17px;font-weight:700;color:#1c1c1e;">★ Custom Exercise Library</h3>
-            <div class="settings-form" id="custom-library-panel">
-                <p class="settings-hint">Add exercises not in the built-in library. They appear in the library search with a ★ badge and can be deleted from within the search results.</p>
-                <div style="display:flex;flex-direction:column;gap:10px;">
-                    <label class="ex-form-label" style="color:#3a3a3c;">Exercise Name</label>
-                    <input id="cl-name" type="text" placeholder="e.g. Cable Fly" style="width:100%;padding:12px;font-size:15px;border:1px solid #d1d1d6;border-radius:10px;background:#fff;color:#1c1c1e;">
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                        <div style="flex:1;min-width:120px;">
-                            <label class="ex-form-label" style="color:#3a3a3c;">Category</label>
-                            <select id="cl-cat" style="width:100%;padding:10px;font-size:14px;border:1px solid #d1d1d6;border-radius:10px;background:#fff;color:#1c1c1e;">
-                                <option value="upper">Upper Body</option>
-                                <option value="lower">Lower Body</option>
-                                <option value="core">Core</option>
-                                <option value="cardio">Cardio</option>
-                                <option value="full">Full Body</option>
-                                <option value="mobility">Mobility</option>
-                                <option value="custom">Other / Custom</option>
-                            </select>
-                        </div>
-                        <div style="flex:1;min-width:120px;">
-                            <label class="ex-form-label" style="color:#3a3a3c;">Type</label>
-                            <select id="cl-type" style="width:100%;padding:10px;font-size:14px;border:1px solid #d1d1d6;border-radius:10px;background:#fff;color:#1c1c1e;">
-                                <option value="isotonic">Isotonic</option>
-                                <option value="isometric">Isometric</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                        <div style="flex:1;min-width:100px;">
-                            <label class="ex-form-label" style="color:#3a3a3c;">Body Weight %</label>
-                            <input id="cl-bwpct" type="number" min="0" max="100" step="1" value="0" placeholder="0–100"
-                                style="width:100%;padding:10px;font-size:14px;border:1px solid #d1d1d6;border-radius:10px;background:#fff;color:#1c1c1e;text-align:center;">
-                        </div>
-                        <div style="flex:1;min-width:100px;">
-                            <label class="ex-form-label" style="color:#3a3a3c;">Height % / rep</label>
-                            <input id="cl-hpct" type="number" min="0" max="100" step="1" placeholder="optional"
-                                style="width:100%;padding:10px;font-size:14px;border:1px solid #d1d1d6;border-radius:10px;background:#fff;color:#1c1c1e;text-align:center;">
-                        </div>
-                        <div style="flex:1;min-width:100px;">
-                            <label class="ex-form-label" style="color:#3a3a3c;">Default Unit</label>
-                            <select id="cl-unit" style="width:100%;padding:10px;font-size:14px;border:1px solid #d1d1d6;border-radius:10px;background:#fff;color:#1c1c1e;">
-                                <option value="reps">Reps</option>
-                                <option value="seconds">Seconds</option>
-                                <option value="meters">Meters</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div style="display:flex;flex-direction:column;gap:6px;">
-                        <label class="ex-form-label" style="color:#3a3a3c;">Notes (optional)</label>
-                        <textarea id="cl-notes" rows="2" placeholder="Add your own notes about this exercise…"
-                            style="width:100%;padding:10px;font-size:14px;border:1px solid #d1d1d6;border-radius:10px;background:#fff;color:#1c1c1e;resize:vertical;font-family:inherit;"></textarea>
-                    </div>
-                    <button onclick="saveCustomLibraryFromSettings()" style="background:#ff9f0a;margin-top:4px;">★ Save to Library</button>
-                </div>
-                <div id="custom-library-list" style="margin-top:12px;"></div>
-            </div>
-        </div>
-    </main>
-
-    <!-- Exercise entry modal -->
-    <div id="ex-modal-overlay" onclick="exModalCancel()"></div>
-    <div id="ex-modal">
-        <div id="ex-modal-title" class="ex-modal-title"></div>
-        <div id="ex-modal-body"></div>
-        <div class="ex-modal-footer">
-            <button class="ex-modal-cancel" onclick="exModalCancel()">Cancel</button>
-        </div>
+      <p class="deck-context-label" id="multiSelectCount">0 selected</p>
+      <button onclick="studySelected()" id="studySelectedBtn" style="display:none; background:#1e8e3e; color:white;">Study Selected</button>
     </div>
+  </div>
 
-    <!-- Progress log edit modal -->
-    <div id="log-edit-modal-overlay" onclick="logEditModalCancel()"></div>
-    <div id="log-edit-modal">
-        <div id="log-edit-modal-title" class="ex-modal-title"></div>
-        <div id="log-edit-modal-body" class="log-edit-modal-body"></div>
-        <div class="ex-modal-footer">
-            <button class="ex-modal-cancel" onclick="logEditModalCancel()">Cancel</button>
-            <button class="ex-modal-next" onclick="logEditModalSave()">Save ✓</button>
+  <!-- ADD/EDIT: collapsed by default -->
+  <div class="menu-section" id="sectionAddEdit">
+    <h3 class="menu-section-header" onclick="toggleMenuSection('sectionAddEdit')">Add/Edit</h3>
+    <div class="menu-section-content">
+      <button onclick="addDeck()">Add Deck</button>
+      <button onclick="addFolder()">Add Folder</button>
+      <button onclick="deleteDeck()">Delete Deck</button>
+
+      <p class="deck-context-label" id="addEditDisabledNote">Exit multi-select / multi-deck study to add or edit cards.</p>
+
+      <div id="addEditFormArea">
+        <h4>Add Card</h4>
+        <p class="deck-context-label">Adding to: <strong id="addCardDeckName">–</strong></p>
+        <textarea id="newQ" placeholder="Question"></textarea>
+        <textarea id="newA" placeholder="Answer"></textarea>
+        <input type="file" id="newImg" accept="image/*">
+        <button onclick="addCard()">Add Card</button>
+
+        <div class="collapsible-section">
+          <h3 class="collapsible-header" onclick="toggleEditSection()">Edit Cards</h3>
+
+          <div class="collapsible-content" id="editSection">
+            <p class="deck-context-label">Editing: <strong id="editCardsDeckName">–</strong></p>
+            <div id="cardList"></div>
+            <div id="editor" style="display:none;">
+              <textarea id="editQ" placeholder="Question"></textarea>
+              <textarea id="editA" placeholder="Answer"></textarea>
+              <input type="file" id="editImg" accept="image/*">
+
+              <div class="editor-buttons">
+                <button onclick="saveEdit()">Save</button>
+                <button onclick="cancelEdit()">Cancel</button>
+                <button onclick="deleteCard()">Delete</button>
+              </div>
+            </div>
+          </div>
         </div>
+      </div>
     </div>
+  </div>
 
-    <!-- Slide-up navigation menu -->
-    <div id="menu-overlay" onclick="toggleMenu()"></div>
-    <div id="menu-drawer">
-        <div id="menu-drawer-handle"></div>
-        <button class="menu-item active" data-tab="calendar" onclick="switchTab('calendar')">📅  Calendar</button>
-        <button class="menu-item" data-tab="plan"     onclick="switchTab('plan')">📋  Plan</button>
-        <button class="menu-item" data-tab="workout"  onclick="switchTab('workout')">🏋️  Workout</button>
-        <button class="menu-item" data-tab="progress" onclick="switchTab('progress')">📈  Progress</button>
-        <button class="menu-item" data-tab="settings" onclick="switchTab('settings')">⚙️ Settings</button>
+  <!-- IMPORT/EXPORT: collapsed by default -->
+  <div class="menu-section" id="sectionImportExport">
+    <h3 class="menu-section-header" onclick="toggleMenuSection('sectionImportExport')">Import/Export</h3>
+    <div class="menu-section-content">
+      <h4>Import CSV</h4>
+      <input type="file" id="csvFile" accept=".csv" multiple>
+      <button onclick="importCSV()">Import</button>
+
+      <h4>Export Decks</h4>
+      <button onclick="exportCurrentDeck()">Export Current Deck</button>
+      <button onclick="exportAllDecks()">Export All Decks (Backup)</button>
+
+      <p style="font-size:14px; color:#888; margin-top:8px;">
+      Tip: After tapping Export, choose "Save to Files" → "iCloud Drive" to back up and sync your decks across devices.
+      </p>
+
+      <h4>Restore from Backup</h4>
+      <input type="file" id="restoreFile" accept=".json,.csv" multiple>
+      <button onclick="restoreFromBackup()">Restore from File</button>
+
+      <p style="font-size:13px; color:#777; margin-top:8px;">
+      Upload a .json backup or .csv files.<br>
+      Warning: This will overwrite existing decks with the same name.
+      </p>
     </div>
+  </div>
 
-    <!-- Timer settings side drawer (slides in from right) — Phase 3: simplified -->
-    <div id="timer-settings-overlay" onclick="closeTimerDrawer()"></div>
-    <div id="timer-settings-drawer">
-        <div class="ts-header">
-            <span class="ts-title">⏱ Timer</span>
-            <button class="ts-close" onclick="closeTimerDrawer()">✕</button>
-        </div>
+  <!-- SETTINGS: collapsed by default -->
+  <div class="menu-section" id="sectionSettings">
+    <h3 class="menu-section-header" onclick="toggleMenuSection('sectionSettings')">Settings</h3>
+    <div class="menu-section-content">
+      <button onclick="toggleInputMode()">User Input Mode: <span id="inputModeStatus">OFF</span></button>
+      <button onclick="toggleShowBoth()">Show Q&amp;A Together: <span id="showBothStatus">OFF</span></button>
+      <button onclick="toggleRepeatIncorrect()">Repeat Incorrect Cards: <span id="repeatIncorrectStatus">ON</span></button>
+      <button onclick="toggleTheme()">Theme: <span id="themeModeStatus">Dark</span></button>
+      <button onclick="toggleDrawDebug()">Draw Debug: <span id="drawDebugStatus">OFF</span></button>
 
-        <div class="ts-section">
-            <p class="ts-hint" style="margin:0;color:#8e8e93;font-size:13px;line-height:1.5;">
-                Active and rest durations are set per-exercise during workout creation.
-            </p>
-        </div>
-
-        <div class="ts-section">
-            <div class="ts-label" style="color:#ff453a;">Reset Timer</div>
-            <button class="ts-order-toggle" style="background:#3a3a3c;color:#ff453a;"
-                onclick="resetTimerFromDrawer()">↺ Reset Current Timer</button>
-        </div>
-
-        <div class="ts-section">
-            <div class="ts-label" style="color:#30d158;">Complete Workout</div>
-            <button class="ts-order-toggle" style="background:#1c3a28;color:#30d158;"
-                onclick="closeTimerDrawer(); completeWorkout()">✅ Complete Workout Early</button>
-        </div>
-
-        <div class="ts-section">
-            <div class="ts-label" style="color:#fff;">Sounds</div>
-            <button id="sound-toggle-btn" class="ts-order-toggle sound-off" onclick="toggleSound()">🔕 Sound Off</button>
-            <button id="sound-reset-btn" class="ts-order-toggle sound-off" onclick="resumeAudioContext()">Reset Sound</button>
-            <p class="ts-hint" style="margin:0;color:#8e8e93;font-size:13px;line-height:1.5;">
-                Sound On/Off button toggles rest/active countdown timer sound.  Reset Sound button attempts to re-active sound after switching between apps if it doesn't work automatically.
-            </p>
-        </div>
-        
+      <h4>App Info</h4>
+      <p id="appVersionLabel" style="color:#aaa; font-size:14px; margin:8px 0;">Version</p>
+      <button id="checkUpdateBtn" onclick="checkForUpdate()">Check for Update</button>
     </div>
+  </div>
 
 </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
-    <script src="./exercise-library.js"></script>
-    <script src="./app.js"></script>
+<button class="top-icon-btn closeMenuBtn" onclick="toggleMenu()" aria-label="Close menu">×</button>
 
+<!-- Delete Deck — step 1: pick which deck (defaults to the current deck) -->
+<div class="modal-overlay" id="deleteDeckPickModal">
+  <div class="modal-box">
+    <h3>Delete Deck</h3>
+    <p>Choose which deck to delete:</p>
+    <select id="deleteDeckSelect"></select>
+    <div class="modal-buttons">
+      <button style="background:#555; color:white;" onclick="closeDeleteDeckPickModal()">Cancel</button>
+      <button style="background:#c62828; color:white;" onclick="proceedToDeleteConfirm()">Next</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Deck — step 2: confirm by full name -->
+<div class="modal-overlay" id="deleteDeckConfirmModal">
+  <div class="modal-box">
+    <h3>Confirm Delete</h3>
+    <p>This will permanently delete this deck and all of its cards:</p>
+    <div class="deck-name-display" id="deleteDeckConfirmName"></div>
+    <div class="modal-buttons">
+      <button style="background:#555; color:white;" onclick="closeDeleteDeckConfirmModal()">Cancel</button>
+      <button style="background:#c62828; color:white;" onclick="confirmDeleteDeck()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tapping the card counter opens this: jump straight to a card number
+     within the current study pass. -->
+<div class="modal-overlay" id="goToCardModal">
+  <div class="modal-box">
+    <h3>Go to Card</h3>
+    <p>Enter a card number (1–<span id="goToCardMax">0</span>):</p>
+    <input type="number" id="goToCardInput" inputmode="numeric" min="1"
+           onkeydown="if(event.key==='Enter'){confirmGoToCard();}">
+    <div class="modal-buttons">
+      <button style="background:#555; color:white;" onclick="closeGoToCardModal()">Cancel</button>
+      <button style="background:#1e8e3e; color:white;" onclick="confirmGoToCard()">Go</button>
+    </div>
+  </div>
+</div>
+
+<button class="top-icon-btn menuBtn" onclick="toggleMenu()" aria-label="Open menu">☰</button>
+
+<div class="top-right-controls">
+  <button class="top-icon-btn" id="flagBtn" onclick="toggleFlagCurrentCard()" aria-label="Add to Focused Study" style="display:none;">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+      <line x1="5" y1="3" x2="5" y2="21"/>
+      <path d="M5 4h13l-3 4 3 4H5z"/>
+    </svg>
+  </button>
+
+  <div id="cardCounter" class="card-counter" onclick="openGoToCardModal()">– / –</div>
+
+  <button class="top-icon-btn" id="backFlipBtn" onclick="handleBackOrFlip()" aria-label="Go back or flip card">←</button>
+</div>
+
+<div id="autoCloseMessage">Auto-close paused for 30 seconds</div>
+
+<div class="main-content-area">
+  <div id="card">Tap “Show Question” to begin</div>
+  <textarea id="userAnswerArea" placeholder="Type or write your answer here..."></textarea>
+
+  <div id="drawBoxContainer">
+    <div class="draw-toolbar">
+      <label class="draw-lines-toggle">
+        <input type="checkbox" id="drawLinesToggle" onchange="toggleDrawLines()"> Ruled Lines
+      </label>
+      <button type="button" id="clearDrawBtn" onclick="clearDrawCanvas()">Clear</button>
+    </div>
+    <div class="draw-canvas-wrap">
+      <canvas id="drawLinesCanvas"></canvas>
+      <canvas id="drawCanvas"></canvas>
+    </div>
+  </div>
+</div>
+
+<div id="drawDebugPanel" style="display:none; position:fixed; left:8px; right:8px; bottom:calc(84px + env(safe-area-inset-bottom, 0px)); max-height:150px; overflow-y:auto; background:rgba(0,0,0,0.88); color:#8bc34a; font-family:monospace; font-size:11px; line-height:1.4; padding:8px; border-radius:8px; z-index:2500; text-align:left; white-space:pre-wrap; pointer-events:none;"></div>
+
+<div class="bottom-bar">
+  <button id="showBtn" onclick="handleShow()">Show Question</button>
+  <button id="correctBtn" onclick="grade(true)">Correct</button>
+  <button id="incorrectBtn" onclick="grade(false)">Incorrect</button>
+  <button id="markDoneBtn" onclick="markDeckDone()" style="display:none; background:#2e7d32;">Mark Done ✔</button>
+</div>
+
+<script>
+// ---------------------------------------------------------------------
+// Focused Study (v1.11) — a reserved, auto-created/auto-deleted deck that
+// holds lightweight {refDeck, refId} pointers (not real card copies) into
+// cards flagged from anywhere in the app. See resolveCardRef() and
+// toggleFlagCurrentCard() further down. Declared before loadData() runs
+// since its migration pass uses genCardId()/FOCUSED_DECK_NAME.
+// ---------------------------------------------------------------------
+const FOCUSED_DECK_NAME = "Focused Study";
+
+// Stable per-card identifiers, used so the Focused Study deck can point at
+// a specific card regardless of its position in deck.cards (which shifts
+// as cards are added/edited/deleted/reordered).
+let idCounter = 0;
+function genCardId() {
+  return "c" + Date.now().toString(36) + "_" + (idCounter++) + "_" + Math.random().toString(36).slice(2, 7);
+}
+
+// Whether missed cards get re-queued at the end of a study pass. Persisted
+// like Theme/Show-Q&A-Together; defaults to the prior always-on behavior.
+let repeatIncorrectEnabled = true;
+try {
+  const savedRepeat = localStorage.getItem("flashcardsRepeatIncorrect");
+  if (savedRepeat !== null) repeatIncorrectEnabled = savedRepeat === "true";
+} catch (e) { /* localStorage unavailable — default to on */ }
+
+let data = loadData();
+let currentDeck = null;
+
+// Session-only-in-the-sense-of-"not deck.cards" study state. sessionQueue and
+// repeatQueue hold INDICES into the current deck's cards array (never the
+// card objects themselves, and never written back onto deck.cards — that's
+// what used to happen, and could silently corrupt the saved deck if any
+// other action triggered a save() mid-session). Storing indices instead of
+// objects is also what makes this state cheap to persist to
+// "studyData_session" (see saveSession()) so a study pass survives the app
+// being backgrounded/killed and reloaded by the OS.
+let sessionQueue = [];
+let sessionIndex = 0;
+let repeatQueue = [];
+
+let showingAnswer = false;
+let firstShow = true;
+let editingIndex = null;
+let userInputMode = 'off';   // 'off' | 'text' | 'draw' — cycled by toggleInputMode()
+let showBothMode = false;    // when true, Question+Answer render together with a single "Next" button
+try {
+  showBothMode = localStorage.getItem("flashcardsShowBoth") === "true";
+} catch (e) { /* localStorage unavailable — default to off */ }
+let autoCloseEnabled = true;
+let lastDeckSelectionTime = 0;
+const AUTO_CLOSE_GRACE_PERIOD = 30 * 1000; // 30 seconds in milliseconds
+
+// ---------------------------------------------------------------------
+// Folders + multi-select + multi-deck study state (v1.9)
+// ---------------------------------------------------------------------
+let multiSelectMode = false;      // true while the "Select Decks" toggle is on
+let selectedDecks = new Set();    // deck names checked while multiSelectMode is on
+let multiShuffleTogether = false; // whether "Study Selected" mixes decks together
+
+let inMultiStudy = false;         // true while actively studying >1 deck at once
+let multiStudyDecks = null;       // array of deck names in the active multi-study session
+let multiQueue = [];              // array of {deck, idx} refs — the combined study pass
+let multiIndex = 0;
+let multiRepeatQueue = [];
+let multiShowingAnswer = false;
+let multiFirstShow = true;
+
+let dragState = null;             // active custom drag-and-drop operation, if any
+let lastDragOverEl = null;
+
+// Single source of truth for the version shown in the menu. Keep this in
+// step with the CACHE name in service-worker.js when releasing an update.
+const APP_VERSION = "1.17";
+let reloadingForUpdate = false; // guards against reloading more than once
+
+// Cache frequently-used DOM lookups once instead of re-querying on every call.
+const cardEl = document.getElementById("card");
+const showBtn = document.getElementById("showBtn");
+const correctBtn = document.getElementById("correctBtn");
+const incorrectBtn = document.getElementById("incorrectBtn");
+const markDoneBtn = document.getElementById("markDoneBtn");
+const counterEl = document.getElementById("cardCounter");
+const backFlipBtn = document.getElementById("backFlipBtn");
+const userAnswerArea = document.getElementById("userAnswerArea");
+const deckListEl = document.getElementById("deckList");
+const cardListEl = document.getElementById("cardList");
+const sidebarEl = document.getElementById("sidebar");
+const drawBoxContainer = document.getElementById("drawBoxContainer");
+const drawLinesCanvasEl = document.getElementById("drawLinesCanvas");
+const drawCanvasEl = document.getElementById("drawCanvas");
+const drawCtx = drawCanvasEl.getContext("2d");
+const drawLinesCtx = drawLinesCanvasEl.getContext("2d");
+
+function loadData() {
+  const raw = localStorage.getItem("studyData");
+  if (!raw) return { decks: {} };
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.decks) {
+      throw new Error("Unexpected data shape");
+    }
+  } catch (err) {
+    console.error("Saved data was corrupted and could not be loaded:", err);
+    try { localStorage.setItem("studyData_corrupted_backup", raw); } catch (e) { /* best effort */ }
+    alert("Your saved flashcards couldn't be read and had to be reset. The unreadable data was kept under 'studyData_corrupted_backup' in local storage in case it can be recovered manually.");
+    return { decks: {} };
+  }
+
+  // One-time migration / cleanup for the old schema, which kept a parallel
+  // "originalCards" array and a "completed" flag. A past bug could leave
+  // deck.cards holding only a partial (repeat-queue) subset of the deck while
+  // originalCards still had the full set — prefer the more complete list.
+  Object.entries(parsed.decks || {}).forEach(([deckName, deck]) => {
+    if (Array.isArray(deck.originalCards) &&
+        deck.originalCards.length >= (Array.isArray(deck.cards) ? deck.cards.length : 0)) {
+      deck.cards = deck.originalCards;
+    }
+    if (!Array.isArray(deck.cards)) deck.cards = [];
+    delete deck.originalCards;
+    delete deck.completed;
+
+    // The Focused Study deck stores {refDeck, refId} pointers rather than
+    // real cards, so it's exempt from the id-backfill below.
+    if (deckName === FOCUSED_DECK_NAME) {
+      deck.isFocused = true;
+      return;
+    }
+
+    // Backfill stable ids onto any card saved before v1.11 introduced them
+    // (needed so flagging/unflagging can reliably reference a specific card).
+    deck.cards.forEach(c => { if (c && !c.id) c.id = genCardId(); });
+  });
+
+  return parsed;
+}
+
+// ---------------------------------------------------------------------
+// Folder + deck ordering (v1.9). Kept as separate lists rather than a
+// single numeric "order" field on each deck, so reordering is just array
+// splicing:
+//   data.folders[name]     = { expanded: bool }
+//   data.folderOrder[name] = [deckName, ...]     (order within that folder)
+//   data.rootOrder          = [{type:'deck'|'folder', name}, ...] (top level)
+// reconcileOrder() is the single source of truth for keeping these in sync
+// with data.decks — it's cheap and safe to call repeatedly (e.g. at the
+// top of every renderDecks()), so new/imported/restored decks, deleted
+// decks, and freshly-created folders always end up exactly once in the
+// right list without every call site needing to remember to update order
+// data by hand.
+// ---------------------------------------------------------------------
+function reconcileOrder() {
+  if (!data.folders || typeof data.folders !== "object") data.folders = {};
+  if (!data.folderOrder || typeof data.folderOrder !== "object") data.folderOrder = {};
+  if (!Array.isArray(data.rootOrder)) data.rootOrder = [];
+
+  // Drop rootOrder entries referencing decks/folders that no longer exist.
+  data.rootOrder = data.rootOrder.filter(e => {
+    if (!e || !e.name) return false;
+    if (e.type === "deck") return !!data.decks[e.name];
+    if (e.type === "folder") return !!data.folders[e.name];
+    return false;
+  });
+
+  // Drop folderOrder entries for folders that no longer exist, or decks
+  // that no longer exist / no longer belong to that folder.
+  Object.keys(data.folderOrder).forEach(fName => {
+    if (!data.folders[fName]) { delete data.folderOrder[fName]; return; }
+    if (!Array.isArray(data.folderOrder[fName])) data.folderOrder[fName] = [];
+    data.folderOrder[fName] = data.folderOrder[fName].filter(
+      n => data.decks[n] && data.decks[n].folder === fName
+    );
+  });
+
+  // De-dupe: each deck should appear exactly once, in the list matching
+  // its own .folder field (root entries first, then per-folder lists).
+  const seen = new Set();
+  data.rootOrder = data.rootOrder.filter(e => {
+    if (e.type !== "deck") return true;
+    if (seen.has(e.name)) return false;
+    if (data.decks[e.name].folder) return false; // belongs in a folder now
+    seen.add(e.name);
+    return true;
+  });
+  Object.keys(data.folderOrder).forEach(fName => {
+    data.folderOrder[fName] = data.folderOrder[fName].filter(n => {
+      if (seen.has(n)) return false;
+      seen.add(n);
+      return true;
+    });
+  });
+
+  // Any deck missing entirely from both lists (new, imported, restored,
+  // or its .folder points at a folder that got deleted) gets placed now.
+  Object.keys(data.decks).forEach(name => {
+    if (seen.has(name)) return;
+    const deck = data.decks[name];
+    if (deck.folder && data.folders[deck.folder]) {
+      if (!data.folderOrder[deck.folder]) data.folderOrder[deck.folder] = [];
+      data.folderOrder[deck.folder].push(name);
+    } else {
+      deck.folder = null;
+      data.rootOrder.push({ type: "deck", name });
+    }
+    seen.add(name);
+  });
+
+  // Every folder must appear in rootOrder exactly once.
+  Object.keys(data.folders).forEach(fName => {
+    if (!data.rootOrder.some(e => e.type === "folder" && e.name === fName)) {
+      data.rootOrder.push({ type: "folder", name: fName });
+    }
+    if (!data.folderOrder[fName]) data.folderOrder[fName] = [];
+  });
+}
+
+// Flat list of every deck name in current display order (root-level decks
+// interleaved with folders, folder contents in their own order) — used to
+// pick a sensible default deck and to move a multi-selected block of
+// decks together while preserving their relative order.
+function flattenDeckOrder() {
+  const result = [];
+  data.rootOrder.forEach(e => {
+    if (e.type === "deck") result.push(e.name);
+    else if (e.type === "folder") (data.folderOrder[e.name] || []).forEach(n => result.push(n));
+  });
+  return result;
+}
+
+// ---------------------------------------------------------------------
+// Focused Study helpers (v1.11)
+// ---------------------------------------------------------------------
+
+function isFocusedDeck(name) {
+  return !!(name && data.decks[name] && data.decks[name].isFocused);
+}
+
+// Resolves the actual underlying card + its real source deck name for a
+// given (deckName, index) pair. For a normal deck this is just the deck
+// itself; for the Focused Study deck (which stores {refDeck, refId}
+// pointers instead of real cards) this looks up the live card in its
+// source deck by id — so edits to the original card always show up here,
+// and there's only ever one copy of the actual card data. Returns null if
+// the deck/index/underlying card no longer exists.
+function resolveCardRef(deckName, index) {
+  const deck = data.decks[deckName];
+  if (!deck) return null;
+  const raw = deck.cards[index];
+  if (!raw) return null;
+  if (isFocusedDeck(deckName)) {
+    const src = data.decks[raw.refDeck];
+    if (!src) return null;
+    const card = src.cards.find(c => c.id === raw.refId);
+    if (!card) return null;
+    return { card, sourceDeck: raw.refDeck };
+  }
+  return { card: raw, sourceDeck: deckName };
+}
+
+// Identifies the exact underlying card (its real source deck + id) that's
+// currently on screen, resolving through Focused Study if needed. Returns
+// null whenever there's no card actually being displayed right now (the
+// "Tap to begin" and "Deck Complete!" states, or nothing selected).
+function currentCardIdentity() {
+  if (inMultiStudy) {
+    if (multiFirstShow) return null;
+    if (!multiQueue.length || multiIndex >= multiQueue.length) return null;
+    const ref = multiQueue[multiIndex];
+    const resolved = resolveCardRef(ref.deck, ref.idx);
+    return resolved ? { deckName: resolved.sourceDeck, id: resolved.card.id } : null;
+  }
+  if (!currentDeck) return null;
+  if (firstShow) return null;
+  if (!sessionQueue.length || sessionIndex >= sessionQueue.length) return null;
+  const resolved = resolveCardRef(currentDeck, sessionQueue[sessionIndex]);
+  return resolved ? { deckName: resolved.sourceDeck, id: resolved.card.id } : null;
+}
+
+function isFlagged(identity) {
+  const fd = data.decks[FOCUSED_DECK_NAME];
+  if (!fd || !identity) return false;
+  return fd.cards.some(r => r.refDeck === identity.deckName && r.refId === identity.id);
+}
+
+function ensureFocusedDeck() {
+  if (!data.decks[FOCUSED_DECK_NAME]) {
+    data.decks[FOCUSED_DECK_NAME] = { cards: [], mode: "sequential", done: false, folder: null, isFocused: true };
+    data.rootOrder.unshift({ type: "deck", name: FOCUSED_DECK_NAME });
+  }
+  return data.decks[FOCUSED_DECK_NAME];
+}
+
+// Removes the Focused Study deck entirely once it has no cards left, plus
+// any now-meaningless saved resume point for it — keeps the deck list
+// clean rather than leaving a permanent empty entry behind.
+function deleteFocusedDeckIfEmpty() {
+  const fd = data.decks[FOCUSED_DECK_NAME];
+  if (!fd || fd.cards.length > 0) return;
+  delete data.decks[FOCUSED_DECK_NAME];
+  data.rootOrder = data.rootOrder.filter(e => !(e.type === "deck" && e.name === FOCUSED_DECK_NAME));
+  clearSessionFor(FOCUSED_DECK_NAME);
+}
+
+// Drops one index from a plain index queue (used by single-deck sessions),
+// shifting every later index down by one to account for the array splice
+// that already happened on the underlying Focused deck's cards array.
+function reindexAfterFocusedSplice(queue, removedIndex) {
+  return queue.filter(i => i !== removedIndex).map(i => (i > removedIndex ? i - 1 : i));
+}
+
+// Same idea, but for the {deck, idx} ref queues used by multi-deck study —
+// only entries pointing at the Focused deck itself are affected.
+function reindexRefsAfterFocusedSplice(queue, removedIndex) {
+  return queue
+    .filter(r => !(r.deck === FOCUSED_DECK_NAME && r.idx === removedIndex))
+    .map(r => (r.deck === FOCUSED_DECK_NAME && r.idx > removedIndex) ? { deck: r.deck, idx: r.idx - 1 } : r);
+}
+
+// Inserts a newly-flagged card into whatever study session currently
+// references the Focused Study deck — its live queue if it's actively
+// being studied right now (single- or multi-deck), or its *saved* resume
+// point otherwise — so the new card shows up without forcing a restart.
+function insertFocusedCardIntoSessions(newIndex) {
+  if (!inMultiStudy && currentDeck === FOCUSED_DECK_NAME) {
+    sessionQueue.push(newIndex); // unreachable in practice (flagging while
+    return;                      // browsing Focused is always an unflag),
+  }                               // kept for robustness.
+
+  if (inMultiStudy && multiStudyDecks && multiStudyDecks.includes(FOCUSED_DECK_NAME)) {
+    multiQueue.push({ deck: FOCUSED_DECK_NAME, idx: newIndex });
+    return;
+  }
+
+  // Not actively being studied — patch its saved resume point(s) instead,
+  // if any exist, so the next visit already includes the new card.
+  const saved = sessionState.decks[FOCUSED_DECK_NAME];
+  if (saved && Array.isArray(saved.queue)) {
+    saved.queue.push(newIndex);
+  }
+  const savedMulti = sessionState.activeMultiStudy;
+  if (savedMulti && Array.isArray(savedMulti.decks) && savedMulti.decks.includes(FOCUSED_DECK_NAME) && Array.isArray(savedMulti.queue)) {
+    savedMulti.queue.push({ deck: FOCUSED_DECK_NAME, idx: newIndex });
+  }
+}
+
+// Mirror of insertFocusedCardIntoSessions() for removal: patches every
+// place that might be holding indices into the Focused deck's cards array
+// so a removed card's slot doesn't leave anything stale or out of bounds.
+function removeFocusedCardFromSessions(removedIndex) {
+  const studyingFocusedSingle = !inMultiStudy && currentDeck === FOCUSED_DECK_NAME;
+  const studyingFocusedMulti = inMultiStudy && multiStudyDecks && multiStudyDecks.includes(FOCUSED_DECK_NAME);
+
+  if (studyingFocusedSingle) {
+    sessionQueue = reindexAfterFocusedSplice(sessionQueue, removedIndex);
+    repeatQueue = reindexAfterFocusedSplice(repeatQueue, removedIndex);
+  } else {
+    const saved = sessionState.decks[FOCUSED_DECK_NAME];
+    if (saved) {
+      if (Array.isArray(saved.queue)) saved.queue = reindexAfterFocusedSplice(saved.queue, removedIndex);
+      if (Array.isArray(saved.repeat)) saved.repeat = reindexAfterFocusedSplice(saved.repeat, removedIndex);
+      if (typeof saved.index === "number" && saved.index > saved.queue.length) saved.index = saved.queue.length;
+    }
+  }
+
+  if (studyingFocusedMulti) {
+    multiQueue = reindexRefsAfterFocusedSplice(multiQueue, removedIndex);
+    multiRepeatQueue = reindexRefsAfterFocusedSplice(multiRepeatQueue, removedIndex);
+  } else {
+    const savedMulti = sessionState.activeMultiStudy;
+    if (savedMulti && Array.isArray(savedMulti.decks) && savedMulti.decks.includes(FOCUSED_DECK_NAME)) {
+      if (Array.isArray(savedMulti.queue)) savedMulti.queue = reindexRefsAfterFocusedSplice(savedMulti.queue, removedIndex);
+      if (Array.isArray(savedMulti.repeat)) savedMulti.repeat = reindexRefsAfterFocusedSplice(savedMulti.repeat, removedIndex);
+      if (typeof savedMulti.index === "number" && savedMulti.index > savedMulti.queue.length) savedMulti.index = savedMulti.queue.length;
+    }
+  }
+
+  return { studyingFocusedSingle, studyingFocusedMulti };
+}
+
+function addToFocused(deckName, cardId) {
+  const fd = ensureFocusedDeck();
+  if (!fd.cards.some(r => r.refDeck === deckName && r.refId === cardId)) {
+    fd.cards.push({ refDeck: deckName, refId: cardId });
+    insertFocusedCardIntoSessions(fd.cards.length - 1);
+  }
+}
+
+// Removes one ref from the Focused deck and patches every session that
+// might reference it. Returns info the caller needs to advance the
+// on-screen study view in place instead of restarting it, or null if the
+// card wasn't actually in the deck.
+function removeFromFocused(deckName, cardId) {
+  const fd = data.decks[FOCUSED_DECK_NAME];
+  if (!fd) return null;
+
+  const removedIndex = fd.cards.findIndex(r => r.refDeck === deckName && r.refId === cardId);
+  if (removedIndex === -1) return null;
+
+  fd.cards.splice(removedIndex, 1);
+  const { studyingFocusedSingle, studyingFocusedMulti } = removeFocusedCardFromSessions(removedIndex);
+  deleteFocusedDeckIfEmpty();
+
+  return { studyingFocusedSingle, studyingFocusedMulti, deckStillExists: !!data.decks[FOCUSED_DECK_NAME] };
+}
+
+// Strips out any Focused Study pointers referencing a card/deck that no
+// longer exists — called wherever a card or a whole deck is deleted.
+function removeFocusedRefsFor(deckName, cardId) {
+  const fd = data.decks[FOCUSED_DECK_NAME];
+  if (!fd) return;
+  fd.cards = fd.cards.filter(r => !(r.refDeck === deckName && (cardId === undefined || r.refId === cardId)));
+  deleteFocusedDeckIfEmpty();
+}
+
+// Puts the study view back into its empty "no deck selected" state —
+// shared by deck deletion and by the flag-toggle fallback for when
+// unflagging removes the last card from an actively-studied Focused deck.
+function resetToNoDeckSelected() {
+  currentDeck = null;
+  sessionQueue = [];
+  sessionIndex = 0;
+
+  cardEl.innerText = 'Tap “Show Question” to begin';
+  showBtn.innerText = "Show Question";
+  showBtn.onclick = handleShow;
+  showBtn.style.display = "block";
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  markDoneBtn.style.display = "none";
+  updateBackButton();
+  updateCardCounter();
+  updateContextLabels();
+  saveSession();
+}
+
+// Advances the on-screen single-deck study view after a card was just
+// spliced out of the (already-reindexed) sessionQueue in place — mirrors
+// the end-of-pass handling in grade(), but never touches deck.cards.
+function advanceSingleAfterFocusedRemoval() {
+  if (sessionIndex >= sessionQueue.length) {
+    if (repeatQueue.length > 0) {
+      sessionQueue = repeatQueue;
+      repeatQueue = [];
+      sessionIndex = 0;
+      showQuestion();
+    } else {
+      showDeckComplete();
+      return;
+    }
+  } else {
+    showQuestion();
+  }
+  updateCardCounter();
+  saveSession();
+}
+
+// Multi-deck equivalent of advanceSingleAfterFocusedRemoval().
+function advanceMultiAfterFocusedRemoval() {
+  if (multiIndex >= multiQueue.length) {
+    if (multiRepeatQueue.length > 0) {
+      multiQueue = multiRepeatQueue;
+      multiRepeatQueue = [];
+      multiIndex = 0;
+      showMultiQuestion();
+    } else {
+      showMultiComplete();
+      return;
+    }
+  } else {
+    showMultiQuestion();
+  }
+  updateCardCounter();
+  saveSession();
+}
+
+// Tapping the flag button — adds/removes the exact card currently on
+// screen to/from the Focused Study deck. Neither direction forces a full
+// deck restart: adding patches the relevant queue directly (see
+// insertFocusedCardIntoSessions()), and removing reindexes the queue in
+// place and simply advances to the next card (see
+// removeFocusedCardFromSessions()) — unless removing the last card in the
+// Focused deck empties it entirely, in which case the view falls back to
+// "no deck selected" (single-deck) or drops out of the multi-deck session.
+function toggleFlagCurrentCard() {
+  const identity = currentCardIdentity();
+  if (!identity) return;
+
+  const wasFlagged = isFlagged(identity);
+
+  if (!wasFlagged) {
+    addToFocused(identity.deckName, identity.id);
+    save();
+    renderDecks();
+    updateBackButton(); // also refreshes the flag button's own appearance
+    return;
+  }
+
+  const result = removeFromFocused(identity.deckName, identity.id);
+  save();
+  renderDecks();
+
+  if (!result) {
+    updateBackButton();
+    return;
+  }
+
+  if (result.studyingFocusedSingle) {
+    if (result.deckStillExists) {
+      advanceSingleAfterFocusedRemoval();
+    } else {
+      resetToNoDeckSelected();
+    }
+    return;
+  }
+
+  if (result.studyingFocusedMulti) {
+    if (result.deckStillExists) {
+      advanceMultiAfterFocusedRemoval();
+    } else {
+      const remaining = multiStudyDecks.filter(n => n !== FOCUSED_DECK_NAME && data.decks[n]);
+      if (remaining.length >= 2) {
+        startMultiStudy(remaining, multiShuffleTogether, false);
+      } else if (remaining.length === 1) {
+        inMultiStudy = false;
+        multiStudyDecks = null;
+        selectDeckAndStudy(remaining[0]);
+      } else {
+        inMultiStudy = false;
+        multiStudyDecks = null;
+        resetToNoDeckSelected();
+      }
+    }
+    return;
+  }
+
+  // Unflagged while browsing some other deck entirely — that deck's own
+  // active session is untouched; just refresh the flag icon/back button.
+  updateBackButton();
+}
+
+// Keeps the flag button's visibility/appearance in sync with whatever
+// card is currently on screen. Called from updateBackButton() so it stays
+// current through every study-state transition without needing its own
+// call site everywhere.
+function refreshFlagButton() {
+  const btn = document.getElementById("flagBtn");
+  if (!btn) return;
+  const identity = currentCardIdentity();
+  if (!identity) {
+    btn.style.display = "none";
+    return;
+  }
+  btn.style.display = "flex";
+  const flagged = isFlagged(identity);
+  btn.classList.toggle("flagged", flagged);
+  btn.setAttribute("aria-label", flagged ? "Remove from Focused Study" : "Add to Focused Study");
+}
+
+function save(){
+  try {
+    localStorage.setItem("studyData", JSON.stringify(data));
+    return true;
+  } catch (err) {
+    console.error("Save failed:", err);
+    if (err && err.name === "QuotaExceededError") {
+      alert("Storage is full, so this change wasn't saved. Try removing an image, deleting some old cards, or exporting a deck and clearing it out.");
+    } else {
+      alert("Something went wrong saving your changes, so they weren't saved. Please try again.");
+    }
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Session persistence — remembers, per deck, exactly where the learner
+// left off (which pass they're on, which card, whether the answer is
+// showing, and any still-unresolved repeat queue) plus the current deck
+// and User Input Mode. Stored separately from "studyData" (the decks
+// themselves) under its own key so that navigating cards doesn't
+// repeatedly rewrite the full deck list (which can include large image
+// data URLs). Written on every state-changing study action and flushed
+// on visibilitychange/pagehide so it survives the OS suspending or
+// killing the page while it's in the background.
+// ---------------------------------------------------------------------
+const SESSION_KEY = "studyData_session";
+
+function loadSessionState() {
+  const empty = { currentDeck: null, userInputMode: "off", decks: {}, lastMode: "single", activeMultiStudy: null };
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return empty;
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") throw new Error("Unexpected session shape");
+
+    if (typeof parsed.currentDeck !== "string") parsed.currentDeck = null;
+    if (!["off", "text", "draw"].includes(parsed.userInputMode)) parsed.userInputMode = "off";
+    if (!parsed.decks || typeof parsed.decks !== "object") parsed.decks = {};
+    if (!["single", "multi"].includes(parsed.lastMode)) parsed.lastMode = "single";
+    if (!parsed.activeMultiStudy || typeof parsed.activeMultiStudy !== "object") parsed.activeMultiStudy = null;
+
+    return parsed;
+  } catch (err) {
+    console.warn("Saved session state was corrupted and has been reset:", err);
+    return empty;
+  }
+}
+
+let sessionState = loadSessionState();
+
+function saveSession() {
+  try {
+    sessionState.userInputMode = userInputMode;
+
+    if (inMultiStudy) {
+      sessionState.lastMode = "multi";
+      saveMultiSession();
+    } else {
+      sessionState.lastMode = "single";
+      sessionState.currentDeck = currentDeck;
+
+      if (currentDeck) {
+        sessionState.decks[currentDeck] = {
+          queue: sessionQueue.slice(),
+          repeat: repeatQueue.slice(),
+          index: sessionIndex,
+          showingAnswer: showingAnswer,
+          firstShow: firstShow
+        };
+      }
+    }
+
+    localStorage.setItem(SESSION_KEY, JSON.stringify(sessionState));
+  } catch (err) {
+    // Best effort — losing the resume point isn't worth interrupting study
+    // with an alert, unlike losing actual deck data in save().
+    console.warn("Could not save session state:", err);
+  }
+}
+
+// Persists the in-progress multi-deck study session (if any) into
+// sessionState, mirroring the per-deck resume points stored for single-deck
+// study. Called from saveSession() whenever inMultiStudy is true, and also
+// right before leaving multi-study for a single deck so progress isn't lost.
+function saveMultiSession() {
+  if (!inMultiStudy || !multiStudyDecks) return;
+  sessionState.activeMultiStudy = {
+    decks: multiStudyDecks.slice(),
+    queue: multiQueue.slice(),
+    repeat: multiRepeatQueue.slice(),
+    index: multiIndex,
+    showingAnswer: multiShowingAnswer,
+    firstShow: multiFirstShow
+  };
+}
+
+// A saved multi-study resume point is only trusted if every {deck, idx}
+// reference still points at a real deck/card (edits/deletions since the
+// save could have invalidated it).
+function isValidMultiSaved(saved) {
+  if (!saved || !Array.isArray(saved.decks) || saved.decks.length < 2) return false;
+  if (!saved.decks.every(n => data.decks[n])) return false;
+  const validRef = r => r && data.decks[r.deck] &&
+    Number.isInteger(r.idx) && r.idx >= 0 && r.idx < data.decks[r.deck].cards.length;
+  if (!Array.isArray(saved.queue) || !saved.queue.every(validRef)) return false;
+  if (!Array.isArray(saved.repeat) || !saved.repeat.every(validRef)) return false;
+  if (typeof saved.index !== "number" || saved.index < 0 || saved.index > saved.queue.length) return false;
+  return true;
+}
+
+// Removes any saved resume point for a deck (e.g. after it's deleted, or
+// after an explicit reset makes the old indices meaningless).
+function clearSessionFor(deckName) {
+  delete sessionState.decks[deckName];
+  if (sessionState.currentDeck === deckName) sessionState.currentDeck = null;
+}
+
+function nl2br(str) {
+  if (!str) return '';
+  // First escape HTML (prevent <script> etc.), then convert newlines
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function toggleMenu() {
+  sidebarEl.classList.toggle("open");
+}
+
+// Accordion behavior for the four top-level menu sections (Decks, Add/Edit,
+// Import/Export, Settings): expanding one auto-collapses the others.
+// Clicking an already-open section's header just collapses it.
+function toggleMenuSection(sectionId) {
+  document.querySelectorAll(".menu-section").forEach(section => {
+    if (section.id === sectionId) {
+      section.classList.toggle("open");
+    } else {
+      section.classList.remove("open");
+    }
+  });
+}
+
+function handleBackOrFlip() {
+  if (inMultiStudy) {
+    if (!multiStudyDecks) return;
+
+    if (showBothMode) {
+      if (multiIndex > 0) {
+        multiIndex--;
+        showMultiQuestion();
+      }
+      return;
+    }
+
+    if (multiShowingAnswer || correctBtn.style.display !== "none") {
+      showMultiQuestion();
+      showBtn.style.display = "block";
+      showBtn.innerText = "Show Answer";
+      correctBtn.style.display = "none";
+      incorrectBtn.style.display = "none";
+      multiShowingAnswer = false;
+      return;
+    }
+
+    if (multiIndex > 0) {
+      multiIndex--;
+      showMultiQuestion();
+      showBtn.style.display = "block";
+      showBtn.innerText = "Show Answer";
+      correctBtn.style.display = "none";
+      incorrectBtn.style.display = "none";
+      multiShowingAnswer = false;
+    }
+    return;
+  }
+
+  if (!currentDeck) return;
+
+  if (showBothMode) {
+    // No separate flip step in this mode — Back always just steps to the
+    // previous card (or does nothing on the first card).
+    if (sessionIndex > 0) {
+      sessionIndex--;
+      showQuestion();
+    }
+    return;
+  }
+
+  if (showingAnswer || correctBtn.style.display !== "none") {
+    // Flip back to question (most common case)
+    showQuestion();
+    showBtn.style.display = "block";
+    showBtn.innerText = "Show Answer";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    showingAnswer = false;
+    return;
+  }
+
+  // Otherwise: go previous if possible
+  if (sessionIndex > 0) {
+    sessionIndex--;
+    showQuestion();
+    showBtn.style.display = "block";
+    showBtn.innerText = "Show Answer";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    showingAnswer = false;
+  }
+  // else: first card + question showing → do nothing
+}
+
+function updateBackButton() {
+  refreshFlagButton();
+
+  if (inMultiStudy) {
+    backFlipBtn.style.display = "flex";
+    const shouldEnable = showBothMode ? multiIndex > 0 : (multiShowingAnswer || multiIndex > 0);
+    backFlipBtn.disabled = !shouldEnable;
+    backFlipBtn.style.opacity = shouldEnable ? "1" : "0.4";
+    return;
+  }
+
+  if (!currentDeck) {
+    backFlipBtn.style.display = "none";
+    return;
+  }
+  backFlipBtn.style.display = "flex";
+
+  const shouldEnable = showBothMode ? sessionIndex > 0 : (showingAnswer || sessionIndex > 0);
+  backFlipBtn.disabled = !shouldEnable;
+  backFlipBtn.style.opacity = shouldEnable ? "1" : "0.4";
+}
+
+function updateCardCounter() {
+  if (inMultiStudy) {
+    const total = multiQueue.length;
+    const current = total > 0 ? multiIndex + 1 : 0;
+    let text = `${current} / ${total}`;
+
+    // A raw "real position" number wouldn't mean anything across multiple
+    // decks, so show which deck the current card belongs to instead —
+    // most useful exactly when shuffled together mixes the decks up.
+    if (total > 0 && multiIndex < multiQueue.length) {
+      text += ` (${multiQueue[multiIndex].deck})`;
+    }
+
+    counterEl.textContent = text;
+    counterEl.style.opacity = total > 0 ? "1" : "0.3";
+    return;
+  }
+
+  if (!currentDeck || !data.decks[currentDeck]) {
+    counterEl.textContent = "– / –";
+    counterEl.style.opacity = "0.3";
+    return;
+  }
+
+  const deck = data.decks[currentDeck];
+  const total = sessionQueue.length;
+  const current = total > 0 ? sessionIndex + 1 : 0;  // 1-based for user-friendliness
+
+  let text = `${current} / ${total}`;
+
+  // In Shuffle mode the pass order no longer matches deck.cards order, so
+  // also show the card's real (unshuffled) position — that's the number
+  // to use in Edit Cards if it needs fixing.
+  if (deck.mode === "shuffle" && total > 0 && sessionIndex < sessionQueue.length) {
+    const actualPosition = sessionQueue[sessionIndex] + 1; // 1-based
+    text += ` (${actualPosition})`;
+  }
+
+  counterEl.textContent = text;
+  counterEl.style.opacity = "1";
+}
+
+function renderDecks() {
+  reconcileOrder();
+  deckListEl.innerHTML = "";
+
+  data.rootOrder.forEach(entry => {
+    if (entry.type === "folder" && data.folders[entry.name]) {
+      deckListEl.appendChild(renderFolderRow(entry.name));
+    } else if (entry.type === "deck" && data.decks[entry.name]) {
+      deckListEl.appendChild(renderDeckRow(entry.name));
+    }
+  });
+
+  updateMultiSelectUI();
+}
+
+function renderFolderRow(folderName) {
+  const folder = data.folders[folderName];
+  const deckNames = (data.folderOrder[folderName] || []).filter(n => data.decks[n]);
+  const containsActive = deckNames.includes(currentDeck) ||
+    (inMultiStudy && multiStudyDecks && deckNames.some(n => multiStudyDecks.includes(n)));
+  const isOpen = folder.expanded || containsActive;
+
+  const wrap = document.createElement("div");
+  wrap.className = "folderItem" + (isOpen ? " open" : "") + (containsActive ? " contains-active" : "");
+  wrap.dataset.folder = folderName;
+  wrap.dataset.dragType = "folder";
+  wrap.dataset.dragName = folderName;
+
+  const header = document.createElement("div");
+  header.className = "folder-header";
+
+  const handle = makeDragHandle("folder", folderName);
+  header.appendChild(handle);
+
+  const arrow = document.createElement("span");
+  arrow.className = "folder-arrow";
+  arrow.textContent = isOpen ? "▾" : "▸";
+  header.appendChild(arrow);
+
+  const label = document.createElement("span");
+  label.className = "folder-label";
+  label.textContent = `${folderName} (${deckNames.length})`;
+  header.appendChild(label);
+
+  const delBtn = document.createElement("span");
+  delBtn.className = "folder-delete";
+  delBtn.textContent = "✕";
+  delBtn.title = "Delete folder";
+  delBtn.onclick = (e) => { e.stopPropagation(); deleteFolder(folderName); };
+  header.appendChild(delBtn);
+
+  header.onclick = (e) => {
+    if (e.target === delBtn || e.target.closest(".drag-handle")) return;
+    folder.expanded = !isOpen;
+    save();
+    renderDecks();
+  };
+
+  wrap.appendChild(header);
+
+  const content = document.createElement("div");
+  content.className = "folder-content";
+  content.dataset.folderContent = folderName;
+  deckNames.forEach(name => content.appendChild(renderDeckRow(name)));
+  wrap.appendChild(content);
+
+  return wrap;
+}
+
+function renderDeckRow(name) {
+  const deck = data.decks[name];
+  const div = document.createElement("div");
+  div.className = "deckItem";
+  div.dataset.dragType = "deck";
+  div.dataset.dragName = name;
+
+  if (deck.done) div.classList.add("done");
+  if (name === currentDeck) div.classList.add("active");
+  if (inMultiStudy && multiStudyDecks && multiStudyDecks.includes(name)) div.classList.add("active");
+  if (selectedDecks.has(name)) div.classList.add("selected");
+
+  const handle = makeDragHandle("deck", name);
+  div.appendChild(handle);
+
+  if (multiSelectMode) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "deck-select-checkbox";
+    cb.checked = selectedDecks.has(name);
+    cb.onclick = (e) => { e.stopPropagation(); toggleDeckSelection(name); };
+    div.appendChild(cb);
+  }
+
+  const label = document.createElement("span");
+  label.className = "deck-label";
+  label.textContent = `${name} (${deck.cards.length})`;
+  div.appendChild(label);
+
+  div.onclick = (e) => {
+    if (e.target.closest(".drag-handle") || e.target.classList.contains("deck-select-checkbox")) return;
+    if (multiSelectMode) {
+      toggleDeckSelection(name);
+      return;
+    }
+    selectDeckAndStudy(name);
+  };
+
+  return div;
+}
+
+// Extracted from the old inline deckItem.onclick — also now responsible for
+// cleanly exiting an in-progress multi-deck study session (saving its
+// resume point first) when the learner taps a single deck instead.
+function selectDeckAndStudy(name) {
+  if (inMultiStudy) {
+    saveMultiSession();
+    inMultiStudy = false;
+    multiStudyDecks = null;
+  }
+
+  if (currentDeck && currentDeck !== name) saveSession(); // flush outgoing deck's position first
+  currentDeck = name;
+
+  startSession(true); // resume this deck's saved position/repeat queue, if any
+
+  const timeSinceLastSelection = Date.now() - lastDeckSelectionTime;
+
+  if (autoCloseEnabled && timeSinceLastSelection <= AUTO_CLOSE_GRACE_PERIOD) {
+    // Grace period is active → keep sidebar open and show message
+    showAutoCloseMessage();
+  } else {
+    // Normal behavior: close the sidebar
+    toggleMenu();
+  }
+
+  // Update timestamp so grace period starts now
+  lastDeckSelectionTime = Date.now();
+
+  renderDecks();
+  renderCardList();
+}
+
+// ---------------------------------------------------------------------
+// Multi-select mode — lets the learner check off several decks at once to
+// batch Mark Done / Restart, drag them as a group, or study them together.
+// ---------------------------------------------------------------------
+
+function toggleMultiSelect() {
+  multiSelectMode = !multiSelectMode;
+  if (!multiSelectMode) selectedDecks.clear();
+  document.getElementById("multiSelectStatus").textContent = multiSelectMode ? "ON" : "OFF";
+  renderDecks();
+  updateAddEditAvailability();
+}
+
+function toggleDeckSelection(name) {
+  if (selectedDecks.has(name)) selectedDecks.delete(name);
+  else selectedDecks.add(name);
+  renderDecks();
+}
+
+function updateMultiSelectUI() {
+  const countEl = document.getElementById("multiSelectCount");
+  const studyBtn = document.getElementById("studySelectedBtn");
+  const restartBtn = document.getElementById("restartDeckMenuBtn");
+  const markBtn = document.getElementById("markDoneMenuBtn");
+  const shuffleStatusEl = document.getElementById("shuffleModeStatus");
+
+  if (multiSelectMode) {
+    countEl.style.display = "block";
+    countEl.textContent = `${selectedDecks.size} selected`;
+    studyBtn.style.display = selectedDecks.size > 0 ? "block" : "none";
+    restartBtn.textContent = selectedDecks.size > 0 ? "Restart Selected" : "Restart Deck";
+    markBtn.textContent = selectedDecks.size > 0 ? "Mark Done ✔ (Selected)" : "Mark Done ✔";
+  } else {
+    countEl.style.display = "none";
+    studyBtn.style.display = "none";
+    restartBtn.textContent = "Restart Deck";
+    markBtn.textContent = "Mark Done ✔";
+  }
+
+  if (multiSelectMode && selectedDecks.size > 1) {
+    shuffleStatusEl.textContent = multiShuffleTogether ? "ON (mix decks)" : "OFF";
+  } else {
+    updateShuffleStatus();
+  }
+}
+
+// Names of the selected decks, in their current display order — used so a
+// dragged multi-selection moves as one coherent, order-preserving block.
+function orderedSelectedDecks() {
+  return flattenDeckOrder().filter(n => selectedDecks.has(n));
+}
+
+function studySelected() {
+  if (selectedDecks.size === 0) return;
+  const names = orderedSelectedDecks();
+
+  if (names.length === 1) {
+    selectDeckAndStudy(names[0]);
+  } else {
+    startMultiStudy(names, multiShuffleTogether, true);
+    sidebarEl.classList.remove("open");
+  }
+
+  multiSelectMode = false;
+  selectedDecks.clear();
+  document.getElementById("multiSelectStatus").textContent = "OFF";
+  renderDecks();
+  updateAddEditAvailability();
+}
+
+function renderCardList() {
+  cardListEl.innerHTML = "";
+
+  if (!currentDeck) {
+    cardListEl.innerHTML = "<p style='color:#888;'>Select a deck first</p>";
+    return;
+  }
+
+  if (isFocusedDeck(currentDeck)) {
+    cardListEl.innerHTML = "<p style='color:#888;'>Focused Study cards are managed by flagging — edit them from their original deck.</p>";
+    return;
+  }
+
+  const deck = data.decks[currentDeck];
+  if (deck.cards.length === 0) {
+    cardListEl.innerHTML = "<p style='color:#888;'>No cards yet</p>";
+    return;
+  }
+
+  deck.cards.forEach((card, index) => {
+    const item = document.createElement("div");
+    item.className = "deckItem";  // reuse style for consistency
+    item.style.padding = "8px 12px";
+    item.style.whiteSpace = "nowrap";
+    item.style.overflow = "hidden";
+    item.style.textOverflow = "ellipsis";
+
+    // Show a 1-based card number, then first 40 chars of question + image indicator
+    let preview = card.q.substring(0, 40);
+    if (card.q.length > 40) preview += "...";
+    if (card.img) preview += " [img]";
+
+    item.textContent = `${index + 1}. ${preview || "(empty question)"}`;
+
+    item.onclick = () => {
+      editingIndex = index;
+      document.getElementById("editQ").value = card.q;
+      document.getElementById("editA").value = card.a;
+      // Image can't be pre-filled easily — we only allow replacing
+      document.getElementById("editor").style.display = "block";
+      document.getElementById("editor").scrollIntoView({ behavior: "smooth" });
+    };
+
+    cardListEl.appendChild(item);
+  });
+}
+
+// ---------------------------------------------------------------------
+// Drag-and-drop reordering — custom, Pointer-Events-based (rather than
+// HTML5 drag-and-drop, which doesn't behave well on touch) so decks and
+// folders can be reordered and moved in/out of folders on a phone. Each
+// row has a small drag-handle; dragging a selected deck while multiple
+// decks are selected moves the whole selection as one block.
+// ---------------------------------------------------------------------
+
+function makeDragHandle(type, name) {
+  const h = document.createElement("span");
+  h.className = "drag-handle";
+  h.textContent = "⠿";
+  h.setAttribute("aria-label", "Drag to reorder");
+  h.addEventListener("pointerdown", (e) => startDrag(e, type, name));
+  return h;
+}
+
+function startDrag(e, type, name) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const names = (type === "deck" && multiSelectMode && selectedDecks.has(name) && selectedDecks.size > 1)
+    ? orderedSelectedDecks()
+    : [name];
+
+  const rowSelector = type === "deck" ? ".deckItem" : ".folder-header";
+  const sourceEl = e.target.closest(rowSelector) || e.target;
+  const rect = sourceEl.getBoundingClientRect();
+
+  const ghost = document.createElement("div");
+  ghost.className = "drag-ghost";
+  ghost.textContent = type === "folder" ? `📁 ${name}` : (names.length > 1 ? `${names.length} decks` : name);
+  ghost.style.width = rect.width + "px";
+  ghost.style.left = rect.left + "px";
+  ghost.style.top = rect.top + "px";
+  document.body.appendChild(ghost);
+
+  dragState = { type, names, ghost, offsetY: e.clientY - rect.top };
+  document.body.classList.add("dragging-active");
+
+  window.addEventListener("pointermove", onDragMove);
+  window.addEventListener("pointerup", onDragEnd);
+  window.addEventListener("pointercancel", onDragEnd);
+}
+
+function onDragMove(e) {
+  if (!dragState) return;
+  dragState.ghost.style.top = (e.clientY - dragState.offsetY) + "px";
+  updateDropIndicator(computeDragTarget(e.clientX, e.clientY));
+}
+
+function onDragEnd(e) {
+  if (!dragState) return;
+  const target = computeDragTarget(e.clientX, e.clientY);
+  clearDropIndicator();
+  dragState.ghost.remove();
+
+  window.removeEventListener("pointermove", onDragMove);
+  window.removeEventListener("pointerup", onDragEnd);
+  window.removeEventListener("pointercancel", onDragEnd);
+  document.body.classList.remove("dragging-active");
+
+  const finishedState = dragState;
+  dragState = null;
+
+  if (target && target.drop) applyDrop(finishedState.type, finishedState.names, target.drop);
+}
+
+// Escapes a value for safe use inside a double-quoted attribute selector
+// (e.g. querySelector(`[data-folder="${escapeAttr(name)}"]`)).
+function escapeAttr(v) {
+  return String(v).replace(/["\\]/g, "\\$&");
+}
+
+// Finds the name of whatever row comes right after rowEl among its own
+// siblings (root-level siblings for a root deck/folder, or siblings within
+// the same folder's content for a nested deck), skipping over any rows
+// that are themselves part of the dragged group. This is what makes
+// "drop right after the row that's already directly above the dragged
+// item" resolve back to the item's original position instead of the end
+// of the whole list — without the skip, the very next sibling would often
+// be the dragged row itself.
+function nextSiblingName(rowEl, excludeNames) {
+  let sib = rowEl.nextElementSibling;
+  while (sib && sib.dataset && excludeNames.includes(sib.dataset.dragName)) {
+    sib = sib.nextElementSibling;
+  }
+  return sib && sib.dataset && sib.dataset.dragName ? sib.dataset.dragName : null;
+}
+
+// Identifies whatever's directly under the pointer and classifies it as
+// one of: a deck row, a folder row (its header), the empty content area
+// of an open folder, or the empty background of the deck list itself.
+function getRowUnderPoint(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return null;
+
+  const deckRow = el.closest(".deckItem");
+  if (deckRow) {
+    const folderContentParent = deckRow.closest(".folder-content");
+    return {
+      kind: "deck",
+      el: deckRow,
+      name: deckRow.dataset.dragName,
+      containerName: folderContentParent ? folderContentParent.dataset.folderContent : null
+    };
+  }
+
+  const folderHeader = el.closest(".folder-header");
+  if (folderHeader) {
+    const folderItemEl = folderHeader.closest(".folderItem");
+    return { kind: "folder", el: folderItemEl, headerEl: folderHeader, name: folderItemEl.dataset.folder };
+  }
+
+  const folderContent = el.closest(".folder-content");
+  if (folderContent) {
+    return { kind: "folder-gap", name: folderContent.dataset.folderContent, el: folderContent };
+  }
+
+  if (el.closest("#deckList")) {
+    return { kind: "root-gap" };
+  }
+
+  return null;
+}
+
+// When a dragged FOLDER is hovering something that lives inside another
+// folder's content (a deck row, or that folder's empty space) there's no
+// meaningful "inside" — folders only ever live at the root — so this
+// redirects the target to "just before/after the containing folder"
+// based on the pointer's position relative to that folder's own header.
+function folderRelativeToFolder(containingFolderName, y) {
+  const folderItemEl = document.querySelector(`.folderItem[data-folder="${escapeAttr(containingFolderName)}"]`);
+  if (!folderItemEl) return null;
+  const headerEl = folderItemEl.querySelector(":scope > .folder-header");
+  if (!headerEl) return null;
+  const rect = headerEl.getBoundingClientRect();
+  const before = y < rect.top + rect.height / 2;
+  return before
+    ? { drop: { beforeName: containingFolderName }, indicatorEl: headerEl, indicatorClass: "drag-over-top" }
+    : { drop: { beforeName: nextSiblingName(folderItemEl, dragState.names) }, indicatorEl: headerEl, indicatorClass: "drag-over-bottom" };
+}
+
+// The single source of truth for both the live drop-indicator line/outline
+// (called on every pointermove) and the actual drop applied on release —
+// computing both from the same logic keeps what the learner sees in sync
+// with what actually happens.
+function computeDragTarget(x, y) {
+  if (!dragState) return null;
+  const row = getRowUnderPoint(x, y);
+  if (!row) return null;
+
+  if (row.kind === "deck") {
+    if (dragState.names.includes(row.name)) return null; // hovering the dragged item itself
+
+    const rect = row.el.getBoundingClientRect();
+    const before = y < rect.top + rect.height / 2;
+
+    if (dragState.type === "folder") {
+      // A folder can only ever reorder among root-level siblings. If this
+      // deck lives inside a folder, treat it as "relative to that folder".
+      if (row.containerName) return folderRelativeToFolder(row.containerName, y);
+      return before
+        ? { drop: { beforeName: row.name }, indicatorEl: row.el, indicatorClass: "drag-over-top" }
+        : { drop: { beforeName: nextSiblingName(row.el, dragState.names) }, indicatorEl: row.el, indicatorClass: "drag-over-bottom" };
+    }
+
+    return before
+      ? { drop: { containerName: row.containerName, beforeName: row.name }, indicatorEl: row.el, indicatorClass: "drag-over-top" }
+      : { drop: { containerName: row.containerName, beforeName: nextSiblingName(row.el, dragState.names) }, indicatorEl: row.el, indicatorClass: "drag-over-bottom" };
+  }
+
+  if (row.kind === "folder") {
+    if (dragState.type === "folder") {
+      if (row.name === dragState.names[0]) return null; // hovering itself
+      const rect = row.headerEl.getBoundingClientRect();
+      const before = y < rect.top + rect.height / 2;
+      return before
+        ? { drop: { beforeName: row.name }, indicatorEl: row.headerEl, indicatorClass: "drag-over-top" }
+        : { drop: { beforeName: nextSiblingName(row.el, dragState.names) }, indicatorEl: row.headerEl, indicatorClass: "drag-over-bottom" };
+    }
+
+    // Dragging deck(s) over a folder's header: split it into thirds so the
+    // learner can choose to drop INTO the folder (middle, dashed outline)
+    // or reorder as a root-level sibling just before/after it (top/bottom
+    // thirds, same line indicator used for deck-to-deck reordering).
+    const rect = row.headerEl.getBoundingClientRect();
+    const rel = (y - rect.top) / rect.height;
+    if (rel < 0.3) {
+      return { drop: { containerName: null, beforeName: row.name }, indicatorEl: row.headerEl, indicatorClass: "drag-over-top" };
+    }
+    if (rel > 0.7) {
+      return { drop: { containerName: null, beforeName: nextSiblingName(row.el, dragState.names) }, indicatorEl: row.headerEl, indicatorClass: "drag-over-bottom" };
+    }
+    return { drop: { containerName: row.name, beforeName: null }, indicatorEl: row.headerEl, indicatorClass: "drag-over-inside" };
+  }
+
+  if (row.kind === "folder-gap") {
+    if (dragState.type === "folder") return folderRelativeToFolder(row.name, y);
+    return { drop: { containerName: row.name, beforeName: null }, indicatorEl: row.el, indicatorClass: "drag-over-inside" };
+  }
+
+  // root-gap: empty background of the deck list itself → append at the end.
+  if (dragState.type === "folder") return { drop: { beforeName: null }, indicatorEl: null, indicatorClass: null };
+  return { drop: { containerName: null, beforeName: null }, indicatorEl: null, indicatorClass: null };
+}
+
+function updateDropIndicator(target) {
+  if (lastDragOverEl) lastDragOverEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-inside");
+  lastDragOverEl = null;
+
+  if (target && target.indicatorEl && target.indicatorClass) {
+    target.indicatorEl.classList.add(target.indicatorClass);
+    lastDragOverEl = target.indicatorEl;
+  }
+}
+
+function clearDropIndicator() {
+  if (lastDragOverEl) lastDragOverEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-inside");
+  lastDragOverEl = null;
+}
+
+function applyDrop(type, names, drop) {
+  if (type === "folder") {
+    const idx = data.rootOrder.findIndex(e => e.type === "folder" && e.name === names[0]);
+    if (idx === -1) return;
+    const [item] = data.rootOrder.splice(idx, 1);
+    let insertAt = drop.beforeName != null
+      ? data.rootOrder.findIndex(e => e.name === drop.beforeName)
+      : data.rootOrder.length;
+    if (insertAt === -1) insertAt = data.rootOrder.length;
+    data.rootOrder.splice(insertAt, 0, item);
+    save();
+    renderDecks();
+    return;
+  }
+
+  // type === "deck": names is an ordered block of one or more deck names.
+  const destIsRoot = drop.containerName == null;
+
+  names.forEach(n => {
+    const deck = data.decks[n];
+    if (!deck) return;
+    if (deck.folder && data.folderOrder[deck.folder]) {
+      const i = data.folderOrder[deck.folder].indexOf(n);
+      if (i !== -1) data.folderOrder[deck.folder].splice(i, 1);
+    } else {
+      const i = data.rootOrder.findIndex(e => e.type === "deck" && e.name === n);
+      if (i !== -1) data.rootOrder.splice(i, 1);
+    }
+  });
+
+  const destArr = destIsRoot ? data.rootOrder : (data.folderOrder[drop.containerName] || (data.folderOrder[drop.containerName] = []));
+  let insertAt;
+  if (drop.beforeName != null) {
+    insertAt = destIsRoot ? destArr.findIndex(e => e.name === drop.beforeName) : destArr.indexOf(drop.beforeName);
+    if (insertAt === -1) insertAt = destArr.length;
+  } else {
+    insertAt = destArr.length;
+  }
+
+  names.forEach((n, i) => {
+    data.decks[n].folder = destIsRoot ? null : drop.containerName;
+    if (destIsRoot) destArr.splice(insertAt + i, 0, { type: "deck", name: n });
+    else destArr.splice(insertAt + i, 0, n);
+  });
+
+  save();
+  renderDecks();
+  renderCardList();
+}
+
+function addDeck() {
+  const name = prompt("Deck name?");
+  if (!name) return;
+
+  if (name === FOCUSED_DECK_NAME) {
+    alert(`"${FOCUSED_DECK_NAME}" is a reserved name used by the flag feature. Please choose another name.`);
+    return;
+  }
+
+  if (data.decks[name]) {
+    alert("A deck with that name already exists.");
+    return;
+  }
+
+  data.decks[name] = {
+    cards: [],
+    mode: "sequential",
+    done: false,
+    folder: null
+  };
+  data.rootOrder.push({ type: "deck", name });
+
+  save();
+  renderDecks();
+}
+
+function addFolder() {
+  const name = prompt("Folder name?");
+  if (!name) return;
+
+  if (data.folders[name]) {
+    alert("A folder with that name already exists.");
+    return;
+  }
+
+  data.folders[name] = { expanded: true };
+  data.folderOrder[name] = [];
+  data.rootOrder.push({ type: "folder", name });
+
+  save();
+  renderDecks();
+}
+
+// Deletes a folder but keeps its decks — they're moved back out to the top
+// level rather than being deleted, since losing cards to a mis-tap on a
+// folder icon would be much worse than losing an empty folder by mistake.
+function deleteFolder(name) {
+  if (!data.folders[name]) return;
+  const deckNames = data.folderOrder[name] || [];
+
+  if (!confirm(`Delete folder "${name}"? Its ${deckNames.length} deck(s) will be moved to the top level (not deleted).`)) {
+    return;
+  }
+
+  deckNames.forEach(n => {
+    if (data.decks[n]) {
+      data.decks[n].folder = null;
+      data.rootOrder.push({ type: "deck", name: n });
+    }
+  });
+
+  delete data.folders[name];
+  delete data.folderOrder[name];
+  data.rootOrder = data.rootOrder.filter(e => !(e.type === "folder" && e.name === name));
+
+  save();
+  renderDecks();
+}
+
+// Delete Deck lives in the Add/Edit section now, away from the deck list,
+// so it can no longer just assume "the current deck" the way it used to.
+// It opens a two-step modal instead: pick which deck (defaulting to
+// whichever deck is currently selected, if any), then confirm against the
+// full deck name. Both modal steps render the name in a wrapping box
+// (.deck-name-display / <select>'s native picker) so a long name can't get
+// clipped the way it could in a native confirm()/prompt() dialog.
+let deckPendingDelete = null;
+
+function deleteDeck() {
+  const deckNames = Object.keys(data.decks);
+  if (deckNames.length === 0) {
+    alert("There are no decks to delete.");
+    return;
+  }
+
+  const select = document.getElementById("deleteDeckSelect");
+  select.innerHTML = "";
+  deckNames.forEach(name => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+
+  // Default to the currently selected deck, if there is one.
+  if (currentDeck && data.decks[currentDeck]) {
+    select.value = currentDeck;
+  }
+
+  document.getElementById("deleteDeckPickModal").classList.add("open");
+}
+
+function closeDeleteDeckPickModal() {
+  document.getElementById("deleteDeckPickModal").classList.remove("open");
+}
+
+function proceedToDeleteConfirm() {
+  const select = document.getElementById("deleteDeckSelect");
+  deckPendingDelete = select.value;
+
+  closeDeleteDeckPickModal();
+
+  document.getElementById("deleteDeckConfirmName").textContent = deckPendingDelete;
+  document.getElementById("deleteDeckConfirmModal").classList.add("open");
+}
+
+function closeDeleteDeckConfirmModal() {
+  deckPendingDelete = null;
+  document.getElementById("deleteDeckConfirmModal").classList.remove("open");
+}
+
+function confirmDeleteDeck() {
+  if (!deckPendingDelete || !data.decks[deckPendingDelete]) {
+    closeDeleteDeckConfirmModal();
+    return;
+  }
+
+  const wasCurrentDeck = deckPendingDelete === currentDeck;
+  const deckBeingDeleted = data.decks[deckPendingDelete];
+
+  if (deckBeingDeleted && deckBeingDeleted.folder && data.folderOrder[deckBeingDeleted.folder]) {
+    const i = data.folderOrder[deckBeingDeleted.folder].indexOf(deckPendingDelete);
+    if (i !== -1) data.folderOrder[deckBeingDeleted.folder].splice(i, 1);
+  } else {
+    data.rootOrder = data.rootOrder.filter(e => !(e.type === "deck" && e.name === deckPendingDelete));
+  }
+  selectedDecks.delete(deckPendingDelete);
+  if (multiStudyDecks) multiStudyDecks = multiStudyDecks.filter(n => n !== deckPendingDelete);
+
+  delete data.decks[deckPendingDelete];
+  clearSessionFor(deckPendingDelete);
+
+  // Any Focused Study pointers into the deck being deleted are now
+  // meaningless — drop them (and the Focused deck itself, if that empties it).
+  if (deckPendingDelete !== FOCUSED_DECK_NAME) {
+    removeFocusedRefsFor(deckPendingDelete);
+  }
+
+  if (wasCurrentDeck) {
+    resetToNoDeckSelected();
+  }
+
+  save();
+  renderDecks();
+  renderCardList();
+
+  document.getElementById("deleteDeckConfirmModal").classList.remove("open");
+  deckPendingDelete = null;
+}
+
+// Shared by both the sidebar "Mark Done" button and the bottom-bar one —
+// previously these were two near-identical copies of the same toggle.
+function toggleDeckDone() {
+  if (!currentDeck) return undefined;
+  data.decks[currentDeck].done = !data.decks[currentDeck].done;
+  save();
+  renderDecks();
+  return data.decks[currentDeck].done;
+}
+
+function markDone(){
+  if (multiSelectMode && selectedDecks.size > 0) {
+    const anyNotDone = Array.from(selectedDecks).some(n => data.decks[n] && !data.decks[n].done);
+    selectedDecks.forEach(n => { if (data.decks[n]) data.decks[n].done = anyNotDone; });
+    save();
+    renderDecks();
+    return;
+  }
+  toggleDeckDone();
+}
+
+// Also used by the bottom-bar "Mark Done" button shown on deck-complete,
+// which needs to mark ALL decks in an active multi-study session done.
+function markDeckDone() {
+  const targets = inMultiStudy && multiStudyDecks ? multiStudyDecks : (currentDeck ? [currentDeck] : []);
+  if (targets.length === 0) return;
+
+  const anyNotDone = targets.some(n => data.decks[n] && !data.decks[n].done);
+  targets.forEach(n => { if (data.decks[n]) data.decks[n].done = anyNotDone; });
+  save();
+  renderDecks();
+
+  if (anyNotDone) {
+    markDoneBtn.innerText = "Done! ✔";
+    markDoneBtn.style.opacity = "0.7";
+  } else {
+    markDoneBtn.innerText = "Mark Done ✔";
+    markDoneBtn.style.opacity = "1";
+  }
+
+  setTimeout(() => {
+    markDoneBtn.innerText = "Mark Done ✔";
+    markDoneBtn.style.opacity = "1";
+  }, 2000);
+}
+
+function toggleMode(){
+  if (multiSelectMode && selectedDecks.size > 1) {
+    // With multiple decks selected, Shuffle now controls whether "Study
+    // Selected" mixes cards from all of them together, rather than any
+    // single deck's own mode.
+    multiShuffleTogether = !multiShuffleTogether;
+    updateMultiSelectUI();
+    return;
+  }
+  if (multiSelectMode && selectedDecks.size === 1) {
+    const only = Array.from(selectedDecks)[0];
+    const deck = data.decks[only];
+    deck.mode = deck.mode === "shuffle" ? "sequential" : "shuffle";
+    save();
+    updateShuffleStatus();
+    return;
+  }
+  if(!currentDeck) return;
+  const deck=data.decks[currentDeck];
+  deck.mode = deck.mode==="shuffle" ? "sequential":"shuffle";
+  save();
+  updateShuffleStatus();
+}
+
+// Keeps the "Shuffle: ON/OFF" label on the Toggle Shuffle button in sync
+// with the current deck's mode, the same way the User Input Mode button
+// already reflects its own state.
+function updateShuffleStatus() {
+  const el = document.getElementById("shuffleModeStatus");
+  if (!el) return;
+  if (!currentDeck || !data.decks[currentDeck]) {
+    el.textContent = "–";
+    return;
+  }
+  el.textContent = data.decks[currentDeck].mode === "shuffle" ? "ON" : "OFF";
+}
+
+const INPUT_MODES = ["off", "text", "draw"];
+const INPUT_MODE_LABELS = { off: "OFF", text: "TEXT", draw: "DRAW" };
+
+function toggleInputMode() {
+  const idx = INPUT_MODES.indexOf(userInputMode);
+  userInputMode = INPUT_MODES[(idx + 1) % INPUT_MODES.length];
+  document.getElementById("inputModeStatus").textContent = INPUT_MODE_LABELS[userInputMode];
+
+  updateDrawingModeClass();
+  saveSession(); // persist the new mode even if no deck is selected yet
+
+  if (inMultiStudy) {
+    startMultiStudy(multiStudyDecks, multiShuffleTogether, false); // fresh pass, new mode
+  } else if (currentDeck) {
+    startSession(false);   // force a fresh pass in the current deck with the new mode
+  }
+}
+
+// Toggles the "Show Q&A Together" setting: when ON, the question and
+// answer render together in one step, with just a "Next" button instead
+// of Show Answer / Correct / Incorrect. This is a global display
+// preference (persisted in localStorage, like Theme) rather than
+// per-deck study state, so it isn't stored in sessionState.
+function toggleShowBoth() {
+  showBothMode = !showBothMode;
+  try {
+    localStorage.setItem("flashcardsShowBoth", showBothMode ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+
+  const status = document.getElementById("showBothStatus");
+  if (status) status.textContent = showBothMode ? "ON" : "OFF";
+
+  if (inMultiStudy) {
+    startMultiStudy(multiStudyDecks, multiShuffleTogether, false); // fresh pass, new mode
+  } else if (currentDeck) {
+    startSession(false);   // force a fresh pass under the new mode
+  }
+}
+
+// Toggles whether cards marked Incorrect get re-queued at the end of the
+// current pass. Only affects grading going forward — it doesn't retroactively
+// touch a repeat queue that's already been built for the in-progress pass.
+function toggleRepeatIncorrect() {
+  repeatIncorrectEnabled = !repeatIncorrectEnabled;
+  try {
+    localStorage.setItem("flashcardsRepeatIncorrect", repeatIncorrectEnabled ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+
+  const status = document.getElementById("repeatIncorrectStatus");
+  if (status) status.textContent = repeatIncorrectEnabled ? "ON" : "OFF";
+}
+
+// Toggles the body-level class that shrinks the question card's own
+// buffers so the draw canvas has as much vertical room as possible. Only
+// relevant while Draw mode is selected — see the CSS rules on
+// body.drawing-mode.
+function updateDrawingModeClass() {
+  document.body.classList.toggle("drawing-mode", userInputMode === "draw");
+  updateDrawDebugPanelVisibility();
+}
+
+// Light/Dark mode. The actual class was already applied (if needed) by the
+// tiny inline script at the top of <body>, before any content rendered —
+// this just reads that state back into a variable and keeps the Settings
+// label in sync, so toggling only ever has to flip one class.
+let lightMode = document.body.classList.contains("light-mode");
+
+function applyTheme() {
+  document.body.classList.toggle("light-mode", lightMode);
+  const status = document.getElementById("themeModeStatus");
+  if (status) status.textContent = lightMode ? "Light" : "Dark";
+}
+
+function toggleTheme() {
+  lightMode = !lightMode;
+  try {
+    localStorage.setItem("flashcardsTheme", lightMode ? "light" : "dark");
+  } catch (e) { /* best effort — theme just won't persist */ }
+  applyTheme();
+}
+
+function restartDeck(){
+  if (multiSelectMode && selectedDecks.size > 0) {
+    const names = Array.from(selectedDecks);
+    names.forEach(n => clearSessionFor(n));
+
+    // If the selection exactly matches an in-progress multi-study session,
+    // restart that session fresh right away rather than just clearing its
+    // resume point for "next time".
+    if (inMultiStudy && multiStudyDecks &&
+        multiStudyDecks.length === names.length && multiStudyDecks.every(n => selectedDecks.has(n))) {
+      startMultiStudy(names, multiShuffleTogether, false);
+    }
+
+    saveSession();
+    alert(`Cleared saved progress for ${names.length} deck(s). They'll start fresh next time you study them.`);
+    return;
+  }
+  startSession(false); // explicit reset — ignore/overwrite any saved resume point
+}
+
+// Keeps the "Adding to: X" / "Editing: X" labels above the Add Card and
+// Edit Cards forms in sync with currentDeck, now that those controls live
+// in the Add/Edit section instead of right next to the deck list. Also
+// keeps the Add/Edit form's disabled state in sync, since both depend on
+// whether a single, unambiguous deck is currently selected.
+function updateContextLabels() {
+  const label = inMultiStudy && multiStudyDecks
+    ? `${multiStudyDecks.length} decks (studying together)`
+    : (currentDeck || "No deck selected");
+  const addLabel = document.getElementById("addCardDeckName");
+  const editLabel = document.getElementById("editCardsDeckName");
+  if (addLabel) addLabel.textContent = label;
+  if (editLabel) editLabel.textContent = label;
+  updateShuffleStatus();
+  updateAddEditAvailability();
+}
+
+// Add Card / Edit Cards only make sense against one unambiguous, real deck,
+// so they're disabled while multi-select is on, a multi-deck study session
+// is active (per-card position also stops being meaningful across decks —
+// handled separately in updateCardCounter()), or the Focused Study deck is
+// selected (its "cards" are just pointers into other decks — edit them at
+// the source instead).
+function updateAddEditAvailability() {
+  const focused = !inMultiStudy && isFocusedDeck(currentDeck);
+  const disabled = multiSelectMode || inMultiStudy || focused;
+  const formArea = document.getElementById("addEditFormArea");
+  const note = document.getElementById("addEditDisabledNote");
+  if (formArea) formArea.classList.toggle("disabled", disabled);
+  if (note) {
+    note.style.display = disabled ? "block" : "none";
+    note.textContent = focused
+      ? "Focused Study cards are managed by flagging — add or edit them from their original deck."
+      : "Exit multi-select / multi-deck study to add or edit cards.";
+  }
+}
+
+// Builds a plain [0, 1, 2, ...] index array for a deck's cards — the
+// starting point for both sequential order and shuffling.
+function makeIndexQueue(length) {
+  return Array.from({ length }, (_, i) => i);
+}
+
+// A saved per-deck resume point is only trusted if every index it contains
+// still falls inside the deck's current card list (edits/re-imports since
+// the save could have shrunk it) and sessionIndex is in-bounds.
+function isValidSavedSession(saved, cardCount) {
+  if (!saved || !Array.isArray(saved.queue) || !Array.isArray(saved.repeat)) return false;
+  const inBounds = i => Number.isInteger(i) && i >= 0 && i < cardCount;
+  if (!saved.queue.every(inBounds) || !saved.repeat.every(inBounds)) return false;
+  if (typeof saved.index !== "number" || saved.index < 0 || saved.index > saved.queue.length) return false;
+  return true;
+}
+
+// resumeIfAvailable=true (the default) restores exactly where the learner
+// left off in this deck — same pass, same card, same showing/hidden answer
+// state, and any cards still waiting in the repeat queue — using the
+// per-deck resume point saved in sessionState. Pass false to force a fresh
+// pass instead (Restart Deck, switching User Input Mode, or after an edit
+// that invalidates card indices).
+function startSession(resumeIfAvailable = true) {
+  const deck = data.decks[currentDeck];
+  if (!deck || !Array.isArray(deck.cards)) {
+    console.error("Cannot start session: deck or deck.cards missing/invalid for", currentDeck);
+    alert("This deck's data looks invalid and can't be studied. Try re-importing it or removing it.");
+    return;
+  }
+
+  updateContextLabels();
+
+  const saved = resumeIfAvailable ? sessionState.decks[currentDeck] : null;
+
+  if (saved && isValidSavedSession(saved, deck.cards.length)) {
+    sessionQueue = saved.queue.slice();
+    repeatQueue = saved.repeat.slice();
+    sessionIndex = saved.index;
+    showingAnswer = !!saved.showingAnswer;
+    firstShow = !!saved.firstShow;
+  } else {
+    // Fresh pass. Shuffle mode shuffles ONCE up front (a real Fisher–Yates
+    // shuffle over card indices) so every card is guaranteed to appear
+    // exactly once per pass — re-randomizing on every card would let some
+    // repeat while others never show at all.
+    sessionQueue = deck.mode === "shuffle" ? shuffle(makeIndexQueue(deck.cards.length)) : makeIndexQueue(deck.cards.length);
+    sessionIndex = 0;
+    repeatQueue = [];
+    showingAnswer = false;
+    firstShow = true;
+  }
+
+  markDoneBtn.innerText = "Mark Done ✔";
+  markDoneBtn.style.opacity = "1";
+
+  userAnswerArea.style.display = "none";
+  drawBoxContainer.style.display = "none";
+  updateDrawingModeClass();
+
+  restoreCardDisplay();
+
+  renderDecks();   // ← ensures highlight updates if coming from restart/complete
+  renderCardList();
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+// Puts the UI into whatever state (sessionIndex, showingAnswer, firstShow)
+// currently describes — used both right after a fresh start and after
+// resuming a saved position, so the two paths share one rendering path.
+function restoreCardDisplay() {
+  if (firstShow) {
+    showBtn.innerText = "Show Question";
+    showBtn.onclick = handleShow;
+    showBtn.style.display = "block";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "none";
+    cardEl.innerText = 'Tap “Show Question” to begin';
+    return;
+  }
+
+  if (sessionIndex >= sessionQueue.length) {
+    // Resuming into a pass that had already been fully completed (repeat
+    // queue cleared) when it was last saved.
+    cardEl.innerHTML = '<strong>Deck Complete!</strong><br><br>';
+    showBtn.innerText = "Restart Deck";
+    showBtn.onclick = restartDeck;
+    showBtn.style.display = "block";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "block";
+    return;
+  }
+
+  markDoneBtn.style.display = "none";
+  showBtn.onclick = handleShow;
+
+  if (showBothMode) {
+    // Combined view is always rendered via showQuestion() — there's no
+    // separate showAnswer() step to resume into.
+    showQuestion();
+    return;
+  }
+
+  if (showingAnswer) {
+    showAnswer();
+  } else {
+    showQuestion();
+  }
+}
+
+function handleShow(){
+  if (inMultiStudy) {
+    if (multiQueue.length === 0) {
+      cardEl.innerText = "No cards.";
+      return;
+    }
+    if (showBothMode) {
+      if (multiFirstShow) {
+        multiFirstShow = false;
+        showMultiQuestion();
+      } else {
+        advanceMulti();
+      }
+      return;
+    }
+    if (multiFirstShow) {
+      multiFirstShow = false;
+      showMultiQuestion();
+    } else if (!multiShowingAnswer) {
+      showMultiAnswer();
+    }
+    return;
+  }
+
+  if(!currentDeck) return;
+  if(sessionQueue.length===0){
+    cardEl.innerText="No cards.";
+    return;
+  }
+
+  if (showBothMode) {
+    if (firstShow) {
+      firstShow = false;
+      showQuestion();
+    } else {
+      advanceCard();
+    }
+    return;
+  }
+
+  if(firstShow){
+    firstShow=false;
+    showQuestion();
+  } else if(!showingAnswer){
+    showAnswer();
+  }
+}
+
+function showQuestion() {
+  const resolved = resolveCardRef(currentDeck, sessionQueue[sessionIndex]);
+  if (!resolved) {
+    cardEl.innerText = "This card is no longer available.";
+    showBtn.style.display = "none";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    updateBackButton();
+    return;
+  }
+  const card = resolved.card;
+
+  if (showBothMode) {
+    // Combined view: no separate reveal step, so treat the card as
+    // "answer shown" for the back-button and session-resume logic.
+    showingAnswer = true;
+
+    const html =
+      '<div class="inner">' +
+        '<div class="qa-question">' + nl2br(card.q) + '</div>' +
+        (card.img ? '<img src="' + card.img + '">' : "") +
+        '<hr class="qa-divider">' +
+        '<div class="qa-answer-label">Answer</div>' +
+        '<div class="qa-answer">' + nl2br(card.a) + '</div>' +
+      '</div>';
+    cardEl.innerHTML = html;
+
+    // Self-testing inputs don't make sense once the answer is already visible.
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "none";
+
+    showBtn.innerText = "Next";
+    showBtn.style.display = "block";
+    showBtn.onclick = handleShow;
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "none";
+
+    updateBackButton();
+    updateCardCounter();
+    saveSession();
+    return;
+  }
+
+  // Set before rendering (rather than left to callers to set afterward) so
+  // that saveSession() below always persists the correct state, even
+  // though some callers also redundantly set this themselves right after.
+  showingAnswer = false;
+
+  let questionHtml = nl2br(card.q);
+  cardEl.innerHTML =
+    '<div class="inner">' + questionHtml + '</div>' +
+    (card.img ? '<br><img src="' + card.img + '">' : "");
+
+  // Show the matching input widget for the current User Input Mode. Each
+  // new question always starts with a blank slate — the text box already
+  // cleared itself here before, and the draw canvas gets the same
+  // treatment via sizeDrawCanvas()'s resize (which clears its buffer).
+  if (userInputMode === "text") {
+    userAnswerArea.style.display = "block";
+    userAnswerArea.value = "";
+    drawBoxContainer.style.display = "none";
+  } else if (userInputMode === "draw") {
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "flex";
+    sizeDrawCanvas();
+  } else {
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "none";
+  }
+
+  showBtn.innerText = "Show Answer";
+  showingAnswer = false;
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+function showAnswer() {
+  const resolved = resolveCardRef(currentDeck, sessionQueue[sessionIndex]);
+  if (!resolved) {
+    cardEl.innerText = "This card is no longer available.";
+    showBtn.style.display = "none";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    updateBackButton();
+    return;
+  }
+  const card = resolved.card;
+
+  if (userInputMode === "text" || userInputMode === "draw") {
+    // The learner's free-text/drawn answer isn't auto-graded — just show
+    // the correct answer above it (and leave their input/drawing visible
+    // below) for self-comparison.
+    cardEl.innerHTML = nl2br(card.a);
+
+    showBtn.style.display = "none";
+    correctBtn.style.display = "block";
+    incorrectBtn.style.display = "block";
+    showingAnswer = true;
+    updateBackButton();
+    saveSession();
+    return;
+  }
+
+  // Normal mode (no user input)
+  let answerHtml = nl2br(card.a);
+  cardEl.innerHTML =
+    '<div class="inner">' + answerHtml + '</div>' +
+    (card.img ? '<br><img src="' + card.img + '">' : "");
+
+  showBtn.style.display = "none";
+  correctBtn.style.display = "block";
+  incorrectBtn.style.display = "block";
+  showingAnswer = true;
+  updateBackButton();
+  saveSession();
+}
+
+// Shared "end of pass, nothing left to repeat" rendering, used by both
+// grade() (normal/graded study) and advanceCard() (Show Q&A Together mode).
+function showDeckComplete() {
+  cardEl.innerHTML = '<strong>Deck Complete!</strong><br><br>';
+
+  // Change button to "Restart Deck"
+  showBtn.innerText = "Restart Deck";
+  showBtn.onclick = restartDeck;           // ← override the click handler
+
+  // Make sure other buttons are hidden
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  showBtn.style.display = "block";
+  markDoneBtn.style.display = "block";
+
+  // Clear out whatever the learner typed/drew on the final card instead of
+  // leaving it visible behind the "Deck Complete!" message.
+  userAnswerArea.value = "";
+  userAnswerArea.style.display = "none";
+  drawBoxContainer.style.display = "none";
+  clearDrawCanvas();
+
+  saveSession();
+}
+
+function grade(correct) {
+  if (inMultiStudy) { gradeMulti(correct); return; }
+
+  const cardIndex = sessionQueue[sessionIndex];
+  if (!correct && repeatIncorrectEnabled) {
+    repeatQueue.push(cardIndex); // Add incorrect cards' indices to repeatQueue
+  }
+
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  showBtn.style.display = "block";
+  showBtn.innerText = "Show Answer";
+
+  sessionIndex++;
+
+  // Check if all cards in this pass are done. Note: this only ever touches
+  // sessionQueue (session-local), never deck.cards — deck.cards (the
+  // persisted source of truth) is left untouched throughout the whole study
+  // session, so editing/deleting cards mid-session, or any other save()
+  // firing in the background, can no longer corrupt or reorder the deck.
+  if (sessionIndex >= sessionQueue.length) {
+    if (repeatQueue.length > 0) {
+      sessionQueue = repeatQueue;
+      repeatQueue = [];
+      sessionIndex = 0;
+      showQuestion();
+    } else {
+      showDeckComplete();
+      return;
+    }
+  }
+
+  showQuestion();
+  showingAnswer = false;
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+// "Next" in Show Q&A Together mode: advances the pass like grade() does,
+// but there's nothing to grade, so it never touches repeatQueue — each
+// card is simply shown once per pass.
+function advanceCard() {
+  sessionIndex++;
+
+  if (sessionIndex >= sessionQueue.length) {
+    if (repeatQueue.length > 0) {
+      sessionQueue = repeatQueue;
+      repeatQueue = [];
+      sessionIndex = 0;
+      showQuestion();
+    } else {
+      showDeckComplete();
+      return;
+    }
+  } else {
+    showQuestion();
+  }
+
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+// ---------------------------------------------------------------------
+// Multi-deck study — studying several decks (checked via multi-select) as
+// one combined pass. Mirrors the single-deck study functions above, but
+// operates on multiQueue/multiIndex/multiRepeatQueue (arrays of {deck,idx}
+// refs into data.decks) instead of currentDeck + sessionQueue, since a
+// single deck's index alone isn't enough once cards from several decks
+// are mixed together.
+// ---------------------------------------------------------------------
+
+// Builds the combined study queue for a set of decks: each deck's cards in
+// its own order, one deck after another. If shuffleAcross is true, the
+// WHOLE combined list is shuffled together afterward (a single Fisher–
+// Yates pass over every card from every selected deck) so the decks are
+// genuinely mixed rather than just shown one deck at a time.
+function buildQueue(deckNames, shuffleAcross) {
+  let queue = [];
+  deckNames.forEach(name => {
+    const deck = data.decks[name];
+    if (!deck) return;
+    deck.cards.forEach((_, idx) => queue.push({ deck: name, idx }));
+  });
+  if (shuffleAcross) queue = shuffle(queue);
+  return queue;
+}
+
+function startMultiStudy(deckNames, shuffleTogether, resumeIfAvailable = true) {
+  const validNames = deckNames.filter(n => data.decks[n]);
+  if (validNames.length < 2) {
+    if (validNames.length === 1) selectDeckAndStudy(validNames[0]);
+    return;
+  }
+
+  inMultiStudy = true;
+  currentDeck = null;
+  multiStudyDecks = validNames;
+
+  const saved = resumeIfAvailable ? sessionState.activeMultiStudy : null;
+  const sameSet = saved && Array.isArray(saved.decks) &&
+    saved.decks.length === validNames.length && saved.decks.every(n => validNames.includes(n));
+
+  if (sameSet && isValidMultiSaved(saved)) {
+    multiQueue = saved.queue.slice();
+    multiRepeatQueue = saved.repeat.slice();
+    multiIndex = saved.index;
+    multiShowingAnswer = !!saved.showingAnswer;
+    multiFirstShow = !!saved.firstShow;
+  } else {
+    multiQueue = buildQueue(validNames, shuffleTogether);
+    multiIndex = 0;
+    multiRepeatQueue = [];
+    multiShowingAnswer = false;
+    multiFirstShow = true;
+  }
+
+  markDoneBtn.innerText = "Mark Done ✔";
+  markDoneBtn.style.opacity = "1";
+  userAnswerArea.style.display = "none";
+  drawBoxContainer.style.display = "none";
+  updateDrawingModeClass();
+
+  restoreMultiCardDisplay();
+
+  renderDecks();
+  renderCardList();
+  updateBackButton();
+  updateCardCounter();
+  updateContextLabels();
+  saveSession();
+}
+
+function restoreMultiCardDisplay() {
+  if (multiFirstShow) {
+    showBtn.innerText = "Show Question";
+    showBtn.onclick = handleShow;
+    showBtn.style.display = "block";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "none";
+    cardEl.innerText = 'Tap “Show Question” to begin';
+    return;
+  }
+
+  if (multiIndex >= multiQueue.length) {
+    cardEl.innerHTML = '<strong>Selected Decks Complete!</strong><br><br>';
+    showBtn.innerText = "Restart";
+    showBtn.onclick = () => startMultiStudy(multiStudyDecks, multiShuffleTogether, false);
+    showBtn.style.display = "block";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "block";
+    return;
+  }
+
+  markDoneBtn.style.display = "none";
+  showBtn.onclick = handleShow;
+
+  if (showBothMode) {
+    showMultiQuestion();
+    return;
+  }
+
+  if (multiShowingAnswer) showMultiAnswer(); else showMultiQuestion();
+}
+
+function showMultiQuestion() {
+  const ref = multiQueue[multiIndex];
+  const resolved = resolveCardRef(ref.deck, ref.idx);
+  if (!resolved) {
+    cardEl.innerText = "This card is no longer available.";
+    showBtn.style.display = "none";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    updateBackButton();
+    return;
+  }
+  const card = resolved.card;
+
+  if (showBothMode) {
+    multiShowingAnswer = true;
+
+    cardEl.innerHTML =
+      '<div class="inner">' +
+        '<div class="qa-question">' + nl2br(card.q) + '</div>' +
+        (card.img ? '<img src="' + card.img + '">' : "") +
+        '<hr class="qa-divider">' +
+        '<div class="qa-answer-label">Answer</div>' +
+        '<div class="qa-answer">' + nl2br(card.a) + '</div>' +
+      '</div>';
+
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "none";
+
+    showBtn.innerText = "Next";
+    showBtn.style.display = "block";
+    showBtn.onclick = handleShow;
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    markDoneBtn.style.display = "none";
+
+    updateBackButton();
+    updateCardCounter();
+    saveSession();
+    return;
+  }
+
+  multiShowingAnswer = false;
+
+  cardEl.innerHTML =
+    '<div class="inner">' + nl2br(card.q) + '</div>' +
+    (card.img ? '<br><img src="' + card.img + '">' : "");
+
+  if (userInputMode === "text") {
+    userAnswerArea.style.display = "block";
+    userAnswerArea.value = "";
+    drawBoxContainer.style.display = "none";
+  } else if (userInputMode === "draw") {
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "flex";
+    sizeDrawCanvas();
+  } else {
+    userAnswerArea.style.display = "none";
+    drawBoxContainer.style.display = "none";
+  }
+
+  showBtn.innerText = "Show Answer";
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+function showMultiAnswer() {
+  const ref = multiQueue[multiIndex];
+  const resolved = resolveCardRef(ref.deck, ref.idx);
+  if (!resolved) {
+    cardEl.innerText = "This card is no longer available.";
+    showBtn.style.display = "none";
+    correctBtn.style.display = "none";
+    incorrectBtn.style.display = "none";
+    updateBackButton();
+    return;
+  }
+  const card = resolved.card;
+
+  if (userInputMode === "text" || userInputMode === "draw") {
+    cardEl.innerHTML = nl2br(card.a);
+  } else {
+    cardEl.innerHTML =
+      '<div class="inner">' + nl2br(card.a) + '</div>' +
+      (card.img ? '<br><img src="' + card.img + '">' : "");
+  }
+
+  showBtn.style.display = "none";
+  correctBtn.style.display = "block";
+  incorrectBtn.style.display = "block";
+  multiShowingAnswer = true;
+  updateBackButton();
+  saveSession();
+}
+
+function showMultiComplete() {
+  cardEl.innerHTML = '<strong>Selected Decks Complete!</strong><br><br>';
+  showBtn.innerText = "Restart";
+  showBtn.onclick = () => startMultiStudy(multiStudyDecks, multiShuffleTogether, false);
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  showBtn.style.display = "block";
+  markDoneBtn.style.display = "block";
+
+  // Clear out whatever the learner typed/drew on the final card instead of
+  // leaving it visible behind the "Selected Decks Complete!" message.
+  userAnswerArea.value = "";
+  userAnswerArea.style.display = "none";
+  drawBoxContainer.style.display = "none";
+  clearDrawCanvas();
+
+  saveSession();
+}
+
+function gradeMulti(correct) {
+  const ref = multiQueue[multiIndex];
+  if (!correct && repeatIncorrectEnabled) multiRepeatQueue.push(ref);
+
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  showBtn.style.display = "block";
+  showBtn.innerText = "Show Answer";
+
+  multiIndex++;
+
+  if (multiIndex >= multiQueue.length) {
+    if (multiRepeatQueue.length > 0) {
+      multiQueue = multiRepeatQueue;
+      multiRepeatQueue = [];
+      multiIndex = 0;
+      showMultiQuestion();
+    } else {
+      showMultiComplete();
+      return;
+    }
+  } else {
+    showMultiQuestion();
+  }
+
+  multiShowingAnswer = false;
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+// "Next" in Show Q&A Together mode for a multi-deck session — advances
+// like gradeMulti() but never touches multiRepeatQueue, since there's
+// nothing to grade.
+function advanceMulti() {
+  multiIndex++;
+
+  if (multiIndex >= multiQueue.length) {
+    if (multiRepeatQueue.length > 0) {
+      multiQueue = multiRepeatQueue;
+      multiRepeatQueue = [];
+      multiIndex = 0;
+      showMultiQuestion();
+    } else {
+      showMultiComplete();
+      return;
+    }
+  } else {
+    showMultiQuestion();
+  }
+
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+}
+
+
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  let i = 0;
+
+  // Add a sentinel newline at the end to flush the last field/row
+  text += '\n';
+
+  while (i < text.length) {
+    const char = text[i];
+    const next = text[i + 1] || '';
+
+    if (char === '"' && inQuotes && next === '"') {
+      // Escaped quote inside quoted field → keep one "
+      field += '"';
+      i += 2;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      i++;
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      row.push(field.trim());
+      field = '';
+      i++;
+      continue;
+    }
+
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      // End of row (only if not inside quotes)
+      if (char === '\r' && next === '\n') i++; // skip LF after CR
+      row.push(field.trim());
+      if (row.some(v => v !== '')) {   // skip completely empty rows
+        rows.push(row);
+      }
+      row = [];
+      field = '';
+      i++;
+      continue;
+    }
+
+    // Normal character
+    field += char;
+    i++;
+  }
+
+  // Final flush if file didn't end with newline
+  if (field || row.length) {
+    row.push(field.trim());
+    if (row.some(v => v !== '')) {
+      rows.push(row);
+    }
+  }
+
+  return rows;
+}
+
+function importCSV() {
+  const files = document.getElementById("csvFile").files;
+  if (!files || files.length === 0) {
+    alert("No files selected.");
+    return;
+  }
+
+  const total = files.length;
+  let processed = 0;
+  let importedCount = 0;
+  const errors = [];
+
+  Array.from(files).forEach((file) => {
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      errors.push(`Skipped ${file.name} — not a .csv file`);
+      processed++;
+      if (processed === total) finishImport();
+      return;
+    }
+
+    // Derive deck name from filename (remove .csv, clean up)
+    let deckName = file.name
+      .replace(/\.csv$/i, "")
+      .replace(/_/g, " ")
+      .trim();
+
+    if (!deckName) {
+      deckName = file.name; // fall back to the raw filename rather than a
+                            // counter-based name that could collide across files
+    }
+
+    if (deckName === FOCUSED_DECK_NAME) {
+      deckName = `${deckName} (imported)`; // that name is reserved for the flag feature
+    }
+
+    if (!data.decks[deckName]) {
+      data.decks[deckName] = {
+        cards: [],
+        mode: "sequential",
+        done: false
+      };
+    }
+
+    const deck = data.decks[deckName];
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const rows = parseCSV(e.target.result);
+
+        rows.forEach(r => {
+          if (r.length >= 2 && (r[0].trim() || r[1].trim())) {
+            deck.cards.push({ id: genCardId(), q: r[0], a: r[1], img: null });
+          }
+        });
+
+        importedCount++;
+      } catch (err) {
+        errors.push(`Error in ${file.name}: ${err.message}`);
+      } finally {
+        processed++;
+        if (processed === total) finishImport();
+      }
+    };
+
+    reader.onerror = () => {
+      errors.push(`Failed to read ${file.name}`);
+      processed++;
+      if (processed === total) finishImport();
+    };
+
+    reader.readAsText(file);
+  });
+
+  function finishImport() {
+    save();  // one save after every file has been processed, not one per file
+    renderDecks();
+    document.getElementById("csvFile").value = ""; // clear input
+
+    let msg = `Successfully imported ${importedCount} deck${importedCount === 1 ? "" : "s"}.`;
+    if (errors.length > 0) {
+      msg += `\n\nErrors:\n${errors.join("\n")}`;
+    }
+    alert(msg);
+  }
+}
+
+function exportCurrentDeck() {
+  if (!currentDeck) {
+    alert("Please select a deck first.");
+    return;
+  }
+
+  const deck = data.decks[currentDeck];
+  const cardsToExport = isFocusedDeck(currentDeck)
+    ? deck.cards.map((_, i) => resolveCardRef(currentDeck, i)).filter(Boolean).map(r => r.card)
+    : deck.cards;
+
+  if (cardsToExport.length === 0) {
+    alert("This deck has no cards to export.");
+    return;
+  }
+
+  let csvContent = "Question,Answer\n";
+
+  cardsToExport.forEach(card => {
+    const question = `"${card.q.replace(/"/g, '""')}"`;
+    const answer   = `"${card.a.replace(/"/g, '""')}"`;
+    csvContent += `${question},${answer}\n`;
+  });
+
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${currentDeck.replace(/[^a-z0-9]/gi, '_')}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  alert(`✅ Exported "${currentDeck}" (${cardsToExport.length} cards)\n\nSave this file to iCloud Drive for backup and sync.`);
+}
+
+function exportAllDecks() {
+  const backup = {
+    version: "2.0",
+    exportedDate: new Date().toISOString(),
+    decks: data.decks,
+    folders: data.folders,
+    folderOrder: data.folderOrder,
+    rootOrder: data.rootOrder
+  };
+
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `FlashCards_Backup_${new Date().toISOString().slice(0,10)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+
+  alert("Full backup created! Save this .json file to iCloud Drive.");
+}
+
+function restoreFromBackup() {
+  const files = document.getElementById("restoreFile").files;
+  if (!files || files.length === 0) {
+    alert("Please select a backup file (.json or .csv).");
+    return;
+  }
+
+  if (!confirm("⚠️ This will overwrite decks with the same name.\n\nContinue with restore?")) {
+    return;
+  }
+
+  const total = files.length;
+  let processed = 0;
+  let restoredCount = 0;
+  let skipped = 0;
+
+  Array.from(files).forEach(file => {
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      try {
+        const fileName = file.name.toLowerCase();
+
+        if (fileName.endsWith(".json")) {
+          // Full backup restore (JSON)
+          const backupData = JSON.parse(e.target.result);
+
+          if (backupData && backupData.decks && typeof backupData.decks === "object") {
+            Object.keys(backupData.decks).forEach(deckName => {
+              const incoming = backupData.decks[deckName];
+              // Validate shape before accepting — an invalid deck used to be
+              // able to sneak in and silently break startSession() later.
+              if (incoming && Array.isArray(incoming.cards)) {
+                const isFocusedIncoming = deckName === FOCUSED_DECK_NAME;
+                if (!isFocusedIncoming) {
+                  // Backfill ids on any card that predates v1.11 (or came from
+                  // an older backup) so flagging can reliably reference it.
+                  incoming.cards.forEach(c => { if (c && !c.id) c.id = genCardId(); });
+                }
+                data.decks[deckName] = {
+                  cards: incoming.cards,
+                  mode: incoming.mode === "shuffle" ? "shuffle" : "sequential",
+                  done: !!incoming.done,
+                  folder: typeof incoming.folder === "string" ? incoming.folder : null,
+                  isFocused: isFocusedIncoming
+                };
+                restoredCount++;
+              } else {
+                skipped++;
+                console.warn(`Skipped deck "${deckName}" in ${file.name}: missing/invalid cards array`);
+              }
+            });
+
+            // Folder structure is optional (older backups won't have it).
+            // Anything not fully accounted for here is fixed up afterward
+            // by reconcileOrder(), so a partial/foreign folder set is safe
+            // to merge in as-is rather than needing to be perfectly valid.
+            if (backupData.folders && typeof backupData.folders === "object") {
+              Object.keys(backupData.folders).forEach(fName => {
+                data.folders[fName] = { expanded: !!(backupData.folders[fName] && backupData.folders[fName].expanded) };
+              });
+            }
+            if (backupData.folderOrder && typeof backupData.folderOrder === "object") {
+              Object.keys(backupData.folderOrder).forEach(fName => {
+                if (data.folders[fName] && Array.isArray(backupData.folderOrder[fName])) {
+                  data.folderOrder[fName] = backupData.folderOrder[fName].slice();
+                }
+              });
+            }
+          } else {
+            skipped++;
+            console.warn(`Invalid backup file format: ${file.name}`);
+          }
+        }
+        else if (fileName.endsWith(".csv")) {
+          // Single deck from CSV (reuse existing parser)
+          let deckName = file.name.replace(/\.csv$/i, "").trim() || file.name;
+          if (deckName === FOCUSED_DECK_NAME) deckName = `${deckName} (imported)`;
+
+          if (!data.decks[deckName]) {
+            data.decks[deckName] = {
+              cards: [],
+              mode: "sequential",
+              done: false
+            };
+          }
+
+          const rows = parseCSV(e.target.result);
+          rows.forEach(r => {
+            if (r.length >= 2 && (r[0].trim() || r[1].trim())) {
+              data.decks[deckName].cards.push({ id: genCardId(), q: r[0], a: r[1], img: null });
+            }
+          });
+          restoredCount++;
+        }
+      } catch (err) {
+        skipped++;
+        console.error("Restore error for", file.name, err);
+      } finally {
+        processed++;
+        if (processed === total) finish();
+      }
+    };
+
+    reader.onerror = () => {
+      skipped++;
+      processed++;
+      if (processed === total) finish();
+    };
+
+    reader.readAsText(file);
+  });
+
+  function finish() {
+    save(); // one save once every file has been handled, not one per file
+    renderDecks();
+
+    let msg = `Restore complete!\n\n${restoredCount} deck${restoredCount === 1 ? '' : 's'} restored.`;
+    if (skipped > 0) msg += `\n${skipped} item(s) skipped due to errors or invalid format.`;
+    alert(msg);
+    document.getElementById("restoreFile").value = ""; // clear input
+  }
+}
+
+function toggleEditSection() {
+  const section = document.querySelector(".collapsible-section");
+  section.classList.toggle("open");
+
+  // Optional: refresh card list when opening (in case deck changed)
+  if (section.classList.contains("open")) {
+    renderCardList();
+  }
+}
+
+function addCard() {
+  if (!currentDeck) {
+    alert("Please select a deck first.");
+    return;
+  }
+
+  if (isFocusedDeck(currentDeck)) {
+    alert("Focused Study cards are managed by flagging — add cards from their original deck.");
+    return;
+  }
+
+  const q = document.getElementById("newQ").value.trim();
+  const a = document.getElementById("newA").value.trim();
+  const imgFile = document.getElementById("newImg").files[0];
+
+  if (!q || !a) {
+    alert("Both Question and Answer are required.");
+    return;
+  }
+
+  const card = { id: genCardId(), q, a, img: null };
+  const deck = data.decks[currentDeck];
+
+  const finish = () => {
+    deck.cards.push(card);
+    save();
+    renderDecks();
+    renderCardList();     // refresh edit list if open
+    clearAddCardFields(); // ← clear the fields
+  };
+
+  if (imgFile) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      card.img = e.target.result;
+      finish();
+    };
+    reader.onerror = () => {
+      alert("Couldn't read the selected image — the card was not saved. Please try again.");
+    };
+    reader.readAsDataURL(imgFile);
+  } else {
+    finish();
+  }
+}
+
+function saveEdit() {
+  if (!currentDeck || editingIndex === null) return;
+  if (isFocusedDeck(currentDeck)) return; // defensive — UI already disables this path
+
+  const deck = data.decks[currentDeck];
+  const newQ = document.getElementById("editQ").value.trim();
+  const newA = document.getElementById("editA").value.trim();
+  const imgFile = document.getElementById("editImg").files[0];
+
+  if (!newQ || !newA) {
+    alert("Question and Answer cannot be empty.");
+    return;
+  }
+
+  // Update the card. deck.cards is now the single source of truth (no more
+  // parallel originalCards array to keep in sync), so editingIndex always
+  // refers to the right card regardless of study-session state.
+  deck.cards[editingIndex].q = newQ;
+  deck.cards[editingIndex].a = newA;
+
+  function finishSave() {
+    save();
+    renderCardList();                // refresh list
+    document.getElementById("editor").style.display = "none";
+    editingIndex = null;             // clear editing state
+    alert("Card updated.");
+  }
+
+  if (imgFile) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      deck.cards[editingIndex].img = e.target.result;
+      finishSave();
+    };
+    reader.onerror = () => {
+      alert("Couldn't read the selected image — no changes were saved. Please try again.");
+    };
+    reader.readAsDataURL(imgFile);
+  } else {
+    finishSave();
+  }
+}
+
+function deleteCard() {
+  if (!currentDeck || editingIndex === null) return;
+  if (isFocusedDeck(currentDeck)) return; // defensive — UI already disables this path
+
+  if (!confirm("Delete this card permanently?")) return;
+
+  const deck = data.decks[currentDeck];
+  const removedId = deck.cards[editingIndex] ? deck.cards[editingIndex].id : undefined;
+  deck.cards.splice(editingIndex, 1);
+
+  // Drop any Focused Study pointer(s) that referenced this now-deleted card.
+  removeFocusedRefsFor(currentDeck, removedId);
+
+  save();
+  renderCardList();
+  document.getElementById("editor").style.display = "none";
+  editingIndex = null;
+
+  // Restart session to avoid stale index issues
+  startSession(false);
+
+  alert("Card deleted.");
+}
+
+function cancelEdit() {
+  // Hide the editor
+  document.getElementById("editor").style.display = "none";
+
+  // Clear the editing state
+  editingIndex = null;
+
+  // Optional: clear the form fields (good UX, prevents confusion)
+  document.getElementById("editQ").value = "";
+  document.getElementById("editA").value = "";
+  document.getElementById("editImg").value = "";  // resets file input
+}
+
+function clearAddCardFields() {
+  document.getElementById("newQ").value = "";
+  document.getElementById("newA").value = "";
+  document.getElementById("newImg").value = "";   // clears the file input
+}
+
+// ---------------------------------------------------------------------
+// Draw box (User Input Mode: Draw)
+//
+// Two stacked <canvas> elements at the exact same size: drawLinesCanvasEl
+// only ever holds the optional ruled-lines background, drawCanvasEl (on
+// top, transparent) captures the learner's actual strokes via Pointer
+// Events (covers mouse, touch, and pen with one code path). They're kept
+// separate so toggling ruled lines on/off only repaints the background
+// layer and never erases a drawing in progress.
+// ---------------------------------------------------------------------
+
+let drawLinesEnabled = false;
+try {
+  drawLinesEnabled = localStorage.getItem("flashcardsDrawLines") === "true";
+} catch (e) { /* localStorage unavailable — default to off */ }
+
+// Draw Debug (v1.15) — an opt-in, on-screen event log for diagnosing dropped
+// strokes directly on-device (no Mac/remote inspector needed). When on, every
+// pointerdown/move/up/cancel/leave on the draw canvas is appended, with its
+// pointerId/pointerType/coordinates/timestamp, to a small fixed panel above
+// the bottom bar. Kept intentionally simple (plain array + textContent,
+// capped length) since this is a diagnostic tool, not a feature.
+let drawDebugEnabled = false;
+try {
+  drawDebugEnabled = localStorage.getItem("flashcardsDrawDebug") === "true";
+} catch (e) { /* localStorage unavailable — default to off */ }
+
+let drawDebugLines = [];
+
+function toggleDrawDebug() {
+  drawDebugEnabled = !drawDebugEnabled;
+  try {
+    localStorage.setItem("flashcardsDrawDebug", drawDebugEnabled ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+  const status = document.getElementById("drawDebugStatus");
+  if (status) status.textContent = drawDebugEnabled ? "ON" : "OFF";
+  if (!drawDebugEnabled) { drawDebugLines = []; }
+  updateDrawDebugPanelVisibility();
+}
+
+function updateDrawDebugPanelVisibility() {
+  const panel = document.getElementById("drawDebugPanel");
+  if (!panel) return;
+  panel.style.display = (drawDebugEnabled && userInputMode === "draw") ? "block" : "none";
+  if (panel.style.display === "block") scheduleDrawDebugRender();
+}
+
+// Writing to the DOM (textContent + scrollTop, which forces a layout read)
+// synchronously inside a pointer event handler is exactly the kind of
+// main-thread work that can itself cause the browser to drop touch samples
+// under load — which would be the debug tool actively contributing to the
+// very problem it's meant to diagnose. Batching the actual DOM write into a
+// single requestAnimationFrame callback (however many log lines arrived
+// since the last frame) keeps every pointer handler itself doing nothing
+// more than an array push.
+let drawDebugRenderScheduled = false;
+function scheduleDrawDebugRender() {
+  if (drawDebugRenderScheduled) return;
+  drawDebugRenderScheduled = true;
+  requestAnimationFrame(() => {
+    drawDebugRenderScheduled = false;
+    const panel = document.getElementById("drawDebugPanel");
+    if (panel && panel.style.display === "block") {
+      panel.textContent = drawDebugLines.join("\n");
+      panel.scrollTop = panel.scrollHeight;
+    }
+  });
+}
+
+function logDrawEvent(label, e, extra) {
+  if (!drawDebugEnabled) return;
+  const t = (typeof performance !== "undefined" ? performance.now() : Date.now()).toFixed(0);
+  const line = `${t}ms ${label} id=${e.pointerId} type=${e.pointerType} press=${(e.pressure || 0).toFixed(2)} x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}${extra ? " " + extra : ""}`;
+  drawDebugLines.push(line);
+  if (drawDebugLines.length > 60) drawDebugLines.shift();
+  scheduleDrawDebugRender();
+}
+
+let isDrawingStroke = false;
+let lastDrawX = 0;
+let lastDrawY = 0;
+let activeTouchId = null; // tracks which Touch.identifier is currently drawing
+
+function getCanvasPoint(e) {
+  const rect = drawCanvasEl.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+// Normalizes a Touch object into the same shape logDrawEvent()/getCanvasPoint()
+// already expect from a PointerEvent, so both code paths can share them.
+// `touchType` is a Safari-only Touch property ("stylus" vs "direct") — used
+// here only to make the debug log read "pen" vs "touch", same as before.
+function touchToPointerLike(t, type) {
+  return {
+    pointerId: t.identifier,
+    pointerType: t.touchType === "stylus" ? "pen" : "touch",
+    pressure: t.force || 0,
+    clientX: t.clientX,
+    clientY: t.clientY,
+    type: type
+  };
+}
+
+function findTouchById(touchList, id) {
+  for (let i = 0; i < touchList.length; i++) {
+    if (touchList[i].identifier === id) return touchList[i];
+  }
+  return null;
+}
+
+function drawSegmentTo(p) {
+  drawCtx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--text").trim() || "#000000";
+  drawCtx.lineWidth = 2.5;
+  drawCtx.lineCap = "round";
+  drawCtx.lineJoin = "round";
+  drawCtx.beginPath();
+  drawCtx.moveTo(lastDrawX, lastDrawY);
+  drawCtx.lineTo(p.x, p.y);
+  drawCtx.stroke();
+  lastDrawX = p.x;
+  lastDrawY = p.y;
+}
+
+// ---------------------------------------------------------------------
+// Touch Events (primary path on iOS/iPadOS — see v1.17 SOC note above).
+// On-device Draw Debug logging confirmed WebKit's Pointer Events pipeline
+// for Apple Pencil silently fails to dispatch a new pointerdown for a fast
+// lift-then-touch-down, with nothing at all reaching JS for the dropped
+// stroke — reproduced identically in a plain Safari tab (so not a PWA/
+// service-worker issue), and absent in Apple Notes on the same iPad/Pencil
+// (so not an OS/hardware issue). That isolates it to Pointer Events
+// specifically, which have an extra hover-disambiguation step (for Pencil
+// 2's hover support) that plain Touch Events don't have. Touch Events also
+// keep targeting the element a touch started on for its whole lifetime, so
+// this doesn't need the setPointerCapture() workaround the Pointer Events
+// path used.
+// ---------------------------------------------------------------------
+
+function handleTouchStart(e) {
+  const t = e.changedTouches[0];
+  if (!t) return;
+  logDrawEvent("DOWN", touchToPointerLike(t, "touchstart"), isDrawingStroke ? "(already drawing!)" : "");
+  activeTouchId = t.identifier;
+  isDrawingStroke = true;
+  const p = getCanvasPoint(t);
+  lastDrawX = p.x;
+  lastDrawY = p.y;
+  e.preventDefault();
+}
+
+function handleTouchMove(e) {
+  if (!isDrawingStroke || activeTouchId === null) return;
+  const t = findTouchById(e.changedTouches, activeTouchId);
+  if (!t) return;
+  logDrawEvent("move", touchToPointerLike(t, "touchmove"));
+  drawSegmentTo(getCanvasPoint(t));
+  e.preventDefault();
+}
+
+function handleTouchEnd(e) {
+  const t = findTouchById(e.changedTouches, activeTouchId);
+  if (t) logDrawEvent(e.type, touchToPointerLike(t, e.type));
+  if (!t && activeTouchId !== null) return; // an unrelated touch ended — ignore
+  isDrawingStroke = false;
+  activeTouchId = null;
+  e.preventDefault();
+}
+
+// ---------------------------------------------------------------------
+// Pointer Events (fallback path — mouse/trackpad on desktop browsers only;
+// iOS/iPadOS use Touch Events above instead, per the v1.17 SOC note).
+// ---------------------------------------------------------------------
+
+function startStroke(e) {
+  logDrawEvent("DOWN", e, isDrawingStroke ? "(already drawing!)" : "");
+  isDrawingStroke = true;
+  if (drawCanvasEl.setPointerCapture) {
+    try { drawCanvasEl.setPointerCapture(e.pointerId); } catch (err) { /* not critical */ }
+  }
+  const p = getCanvasPoint(e);
+  lastDrawX = p.x;
+  lastDrawY = p.y;
+  e.preventDefault();
+}
+
+function continueStroke(e) {
+  if (!isDrawingStroke) return;
+  const events = (typeof e.getCoalescedEvents === "function" && e.getCoalescedEvents().length)
+    ? e.getCoalescedEvents()
+    : [e];
+  logDrawEvent("move", e, `(n=${events.length})`);
+  events.forEach(ev => drawSegmentTo(getCanvasPoint(ev)));
+  e.preventDefault();
+}
+
+function endStroke(e) {
+  if (e) logDrawEvent(e.type, e);
+  isDrawingStroke = false;
+  if (e && drawCanvasEl.releasePointerCapture && drawCanvasEl.hasPointerCapture && drawCanvasEl.hasPointerCapture(e.pointerId)) {
+    try { drawCanvasEl.releasePointerCapture(e.pointerId); } catch (err) { /* not critical */ }
+  }
+}
+
+// Feature-detect touch support once at load: iPadOS/iOS take the Touch
+// Events path (see SOC note); anything without touch (desktop mouse/
+// trackpad) keeps using Pointer Events.
+const drawUsesTouchEvents = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+
+if (drawUsesTouchEvents) {
+  drawCanvasEl.addEventListener("touchstart", handleTouchStart, { passive: false });
+  drawCanvasEl.addEventListener("touchmove", handleTouchMove, { passive: false });
+  drawCanvasEl.addEventListener("touchend", handleTouchEnd, { passive: false });
+  drawCanvasEl.addEventListener("touchcancel", handleTouchEnd, { passive: false });
+} else {
+  drawCanvasEl.addEventListener("pointerdown", startStroke);
+  drawCanvasEl.addEventListener("pointermove", continueStroke);
+  drawCanvasEl.addEventListener("pointerup", endStroke);
+  drawCanvasEl.addEventListener("pointercancel", endStroke);
+  drawCanvasEl.addEventListener("pointerleave", endStroke);
+}
+
+// Repaints just the ruled-lines background layer. Safe to call any time —
+// never touches drawCanvasEl, so it never loses the learner's strokes.
+function drawRuledLines() {
+  const w = drawLinesCanvasEl.width;
+  const h = drawLinesCanvasEl.height;
+  drawLinesCtx.clearRect(0, 0, w, h);
+  if (!drawLinesEnabled) return;
+
+  const spacing = 32;
+  drawLinesCtx.save();
+  drawLinesCtx.strokeStyle = document.body.classList.contains("light-mode")
+    ? "rgba(0,0,0,0.15)"
+    : "rgba(255,255,255,0.18)";
+  drawLinesCtx.lineWidth = 1;
+  for (let y = spacing; y < h; y += spacing) {
+    drawLinesCtx.beginPath();
+    drawLinesCtx.moveTo(0, y + 0.5);
+    drawLinesCtx.lineTo(w, y + 0.5);
+    drawLinesCtx.stroke();
+  }
+  drawLinesCtx.restore();
+}
+
+// Matches both canvases' pixel buffers to their current on-screen size.
+// Resizing a canvas always clears it, which is fine here: this only runs
+// when a fresh question is shown or the viewport actually changes size.
+function resizeCanvasBuffers() {
+  const wrap = document.querySelector(".draw-canvas-wrap");
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  drawLinesCanvasEl.width = w;
+  drawLinesCanvasEl.height = h;
+  drawCanvasEl.width = w;
+  drawCanvasEl.height = h;
+  drawRuledLines();
+}
+
+// Sizes the draw box to fill the live gap between it and the bottom bar,
+// so the canvas uses as much vertical space as the current question's
+// content leaves available, then (re)initializes its pixel buffers.
+function sizeDrawCanvas() {
+  if (getComputedStyle(drawBoxContainer).display === "none") return;
+
+  const wrap = document.querySelector(".draw-canvas-wrap");
+  const bottomBar = document.querySelector(".bottom-bar");
+  const wrapTop = wrap.getBoundingClientRect().top;
+  const bottomBarTop = bottomBar.getBoundingClientRect().top;
+  const available = bottomBarTop - wrapTop - 16; // small breathing room
+  const height = Math.max(160, Math.round(available));
+
+  wrap.style.height = height + "px";
+  resizeCanvasBuffers();
+}
+
+function clearDrawCanvas() {
+  drawCtx.clearRect(0, 0, drawCanvasEl.width, drawCanvasEl.height);
+}
+
+function toggleDrawLines() {
+  drawLinesEnabled = document.getElementById("drawLinesToggle").checked;
+  try {
+    localStorage.setItem("flashcardsDrawLines", drawLinesEnabled ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+  drawRuledLines();
+}
+
+// Keep the draw canvas correctly sized if the viewport changes (rotation,
+// browser chrome showing/hiding, etc.) while Draw mode is active.
+window.addEventListener("resize", () => {
+  if (userInputMode === "draw") sizeDrawCanvas();
+});
+
+// Mobile OSes can suspend or fully kill a backgrounded PWA without ever
+// firing a normal page-unload event, so the resume point (current deck,
+// card, repeat queue, showing/hidden answer) is flushed proactively
+// whenever the app is about to leave the foreground, not just after each
+// study action.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") saveSession();
+});
+window.addEventListener("pagehide", saveSession);
+
+// ---------------------------------------------------------------------
+// "Go to Card" — tapping the card counter opens a small modal to jump
+// straight to a card number within the current study pass.
+// ---------------------------------------------------------------------
+
+function openGoToCardModal() {
+  const queueLen = inMultiStudy ? multiQueue.length : sessionQueue.length;
+  if ((!currentDeck && !inMultiStudy) || queueLen === 0) return;
+
+  document.getElementById("goToCardMax").textContent = queueLen;
+  const input = document.getElementById("goToCardInput");
+  input.min = "1";
+  input.max = String(queueLen);
+  input.value = String((inMultiStudy ? multiIndex : sessionIndex) + 1);
+
+  document.getElementById("goToCardModal").classList.add("open");
+  input.focus();
+  input.select();
+}
+
+function closeGoToCardModal() {
+  document.getElementById("goToCardModal").classList.remove("open");
+}
+
+function confirmGoToCard() {
+  const queueLen = inMultiStudy ? multiQueue.length : sessionQueue.length;
+  const input = document.getElementById("goToCardInput");
+  const num = parseInt(input.value, 10);
+
+  if (!num || num < 1 || num > queueLen) {
+    alert(`Please enter a number between 1 and ${queueLen}.`);
+    return;
+  }
+
+  if (inMultiStudy) {
+    multiIndex = num - 1;
+    multiShowingAnswer = false;
+    multiFirstShow = false;
+    showMultiQuestion();
+  } else {
+    sessionIndex = num - 1;
+    showingAnswer = false;
+    firstShow = false;   // we're jumping straight to a question, not the "first tap" state
+    showQuestion();
+  }
+
+  showBtn.style.display = "block";
+  showBtn.innerText = "Show Answer";
+  showBtn.onclick = handleShow;
+  correctBtn.style.display = "none";
+  incorrectBtn.style.display = "none";
+  markDoneBtn.style.display = "none";
+
+  updateBackButton();
+  updateCardCounter();
+  saveSession();
+  closeGoToCardModal();
+}
+
+function showAutoCloseMessage() {
+  const msg = document.getElementById("autoCloseMessage");
+  msg.style.opacity = "1";
+
+  // Auto-hide after 2.5 seconds
+  setTimeout(() => {
+    msg.style.opacity = "0";
+  }, 2500);
+}
+
+renderDecks();
+
+// Restore the User Input Mode that was active last time, before any
+// session is started (startSession()/restoreCardDisplay() read it).
+userInputMode = sessionState.userInputMode;
+document.getElementById("inputModeStatus").textContent = INPUT_MODE_LABELS[userInputMode];
+updateDrawingModeClass();
+
+if (sessionState.lastMode === "multi" && isValidMultiSaved(sessionState.activeMultiStudy)) {
+  // Resume an in-progress multi-deck study session exactly where it left off.
+  startMultiStudy(sessionState.activeMultiStudy.decks, false, true);
+} else if (sessionState.currentDeck && data.decks[sessionState.currentDeck]) {
+  // Resume exactly where the learner left off, including any deck other
+  // than the first one and any in-progress repeat queue.
+  currentDeck = sessionState.currentDeck;
+  startSession(true);
+} else if (flattenDeckOrder().length > 0) {
+  currentDeck = flattenDeckOrder()[0];  // no saved session — auto-select first deck in display order
+  startSession(true);
+} else {
+  updateContextLabels();
+}
+
+function initVersionDisplay() {
+  const label = document.getElementById("appVersionLabel");
+  if (label) label.textContent = "Version " + APP_VERSION;
+}
+initVersionDisplay();
+applyTheme();
+
+const drawLinesToggleEl = document.getElementById("drawLinesToggle");
+if (drawLinesToggleEl) drawLinesToggleEl.checked = drawLinesEnabled;
+
+const showBothStatusEl = document.getElementById("showBothStatus");
+if (showBothStatusEl) showBothStatusEl.textContent = showBothMode ? "ON" : "OFF";
+
+const repeatIncorrectStatusEl = document.getElementById("repeatIncorrectStatus");
+if (repeatIncorrectStatusEl) repeatIncorrectStatusEl.textContent = repeatIncorrectEnabled ? "ON" : "OFF";
+
+const drawDebugStatusEl = document.getElementById("drawDebugStatus");
+if (drawDebugStatusEl) drawDebugStatusEl.textContent = drawDebugEnabled ? "ON" : "OFF";
+updateDrawDebugPanelVisibility();
+
+// Lets the user pull a new version from inside the app instead of having to
+// delete and reinstall it. service-worker.js's own SW already self-activates
+// (skipWaiting + clients.claim) as soon as it's installed, so all this needs
+// to do is (1) ask the browser to check service-worker.js for changes, and
+// (2) reflect the result in the button. The actual reload once an update
+// lands is handled by the single controllerchange listener below.
+function checkForUpdate() {
+  const btn = document.getElementById("checkUpdateBtn");
+
+  if (!('serviceWorker' in navigator)) {
+    alert("Updates aren't supported in this browser.");
+    return;
+  }
+
+  const finish = (message) => {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Check for Update";
+    }
+    if (message) alert(message);
+  };
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Checking...";
+  }
+
+  navigator.serviceWorker.getRegistration().then(reg => {
+    if (!reg) {
+      finish("No update service is registered yet for this app. Try closing and reopening it once.");
+      return;
+    }
+
+    let updateFound = false;
+    const onUpdateFound = () => {
+      updateFound = true;
+      if (btn) btn.textContent = "Installing update...";
+      // Leave the button in this state — the new worker activates itself
+      // and the controllerchange listener below will reload the page.
+    };
+    reg.addEventListener("updatefound", onUpdateFound);
+
+    reg.update()
+      .catch(err => console.error("Update check failed:", err))
+      .finally(() => {
+        // Give a moment for 'updatefound' to fire before assuming there's
+        // nothing new (checking itself is async and can be quick).
+        setTimeout(() => {
+          reg.removeEventListener("updatefound", onUpdateFound);
+          if (!updateFound) {
+            finish("You're already on the latest version (v" + APP_VERSION + ").");
+          }
+        }, 1500);
+      });
+  }).catch(err => {
+    console.error("Update check failed:", err);
+    finish("Couldn't check for updates. Check your connection and try again.");
+  });
+}
+
+// Register Service Worker for offline support
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js')
+      .then(registration => {
+        console.log('Service Worker registered successfully');
+      })
+      .catch(error => {
+        console.log('Service Worker registration failed:', error);
+      });
+  });
+
+  // A new service worker taking control (whether from checkForUpdate() or a
+  // background browser check) means fresh assets are cached and ready.
+  // Reload once so the user actually sees the new version.
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloadingForUpdate) return;
+    reloadingForUpdate = true;
+    window.location.reload();
+  });
+}
+</script>
 </body>
 </html>
