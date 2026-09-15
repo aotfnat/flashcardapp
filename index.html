@@ -1,5 +1,29 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.15, SOC: Draw-mode dropped-stroke follow-up.
+<!-- Version 1.16, SOC: Draw-mode dropped-stroke follow-up #2.
+     On-device Draw Debug logging (v1.15) showed that events the page DOES
+     receive are handled correctly — a full pointerdown → pointermove(s) →
+     pointerup → pointerleave sequence, in order, for the pointerId that
+     fired it. What's telling is what's absent: a ~1.75s gap between one
+     stroke's pointerup and the next stroke's pointerdown, with only a tiny
+     few-pixel scribble drawn in between — consistent with an entire
+     intended stroke never generating any DOM event at all, rather than an
+     event arriving and being mishandled. Since a genuinely dropped touch
+     leaves nothing in the log by definition, this points upstream of our
+     JS, to iPadOS/WebKit's touch delivery itself. Two changes, in that
+     light: (1) the debug logger itself was writing to the DOM
+     (textContent + scrollTop, which forces a layout read) synchronously
+     inside every pointer event handler — exactly the kind of main-thread
+     work that can make the browser drop touch samples under load, so the
+     tool could have been contributing to the very problem it's meant to
+     diagnose. logDrawEvent() now only pushes to an array; the actual
+     panel repaint is batched into a single requestAnimationFrame callback
+     via scheduleDrawDebugRender(). (2) #drawCanvas now forces its own GPU
+     compositor layer (`transform: translateZ(0)`, `will-change:
+     transform`) — a known workaround on iPad for dropped touch/pencil
+     input caused by a frequently-repainted canvas falling out of sync
+     with the compositor during fast input.
+     ----------------------------------------------------------------
+     Version 1.15, SOC: Draw-mode dropped-stroke follow-up.
      Palm-rejection was ruled out by direct testing (issue persists even
      with only pen or only hand touching, never both). Next candidate:
      iOS Safari's page-level elastic overscroll ("rubber-band") bounce can
@@ -760,6 +784,13 @@ input, textarea, select {
   left: 0;
   background: transparent;
   touch-action: none;          /* so drawing doesn't also scroll the page */
+  /* Promotes this canvas to its own compositor layer. On some iPads,
+     leaving a frequently-repainted canvas on the same layer as surrounding
+     content can get its touch/pencil sampling out of sync with the
+     compositor, which shows up as dropped ink during fast input. Forcing
+     its own layer is a known workaround for that class of bug. */
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 #autoCloseMessage {
@@ -1361,7 +1392,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.15";
+const APP_VERSION = "1.16";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -4213,10 +4244,29 @@ function updateDrawDebugPanelVisibility() {
   const panel = document.getElementById("drawDebugPanel");
   if (!panel) return;
   panel.style.display = (drawDebugEnabled && userInputMode === "draw") ? "block" : "none";
-  if (panel.style.display === "block") {
-    panel.textContent = drawDebugLines.join("\n");
-    panel.scrollTop = panel.scrollHeight;
-  }
+  if (panel.style.display === "block") scheduleDrawDebugRender();
+}
+
+// Writing to the DOM (textContent + scrollTop, which forces a layout read)
+// synchronously inside a pointer event handler is exactly the kind of
+// main-thread work that can itself cause the browser to drop touch samples
+// under load — which would be the debug tool actively contributing to the
+// very problem it's meant to diagnose. Batching the actual DOM write into a
+// single requestAnimationFrame callback (however many log lines arrived
+// since the last frame) keeps every pointer handler itself doing nothing
+// more than an array push.
+let drawDebugRenderScheduled = false;
+function scheduleDrawDebugRender() {
+  if (drawDebugRenderScheduled) return;
+  drawDebugRenderScheduled = true;
+  requestAnimationFrame(() => {
+    drawDebugRenderScheduled = false;
+    const panel = document.getElementById("drawDebugPanel");
+    if (panel && panel.style.display === "block") {
+      panel.textContent = drawDebugLines.join("\n");
+      panel.scrollTop = panel.scrollHeight;
+    }
+  });
 }
 
 function logDrawEvent(label, e, extra) {
@@ -4225,11 +4275,7 @@ function logDrawEvent(label, e, extra) {
   const line = `${t}ms ${label} id=${e.pointerId} type=${e.pointerType} press=${(e.pressure || 0).toFixed(2)} x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}${extra ? " " + extra : ""}`;
   drawDebugLines.push(line);
   if (drawDebugLines.length > 60) drawDebugLines.shift();
-  const panel = document.getElementById("drawDebugPanel");
-  if (panel && panel.style.display === "block") {
-    panel.textContent = drawDebugLines.join("\n");
-    panel.scrollTop = panel.scrollHeight;
-  }
+  scheduleDrawDebugRender();
 }
 
 let isDrawingStroke = false;

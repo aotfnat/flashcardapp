@@ -1,11 +1,12 @@
 //service-worker.js Flashcard app
-//Version 1.15
+//Version 1.16
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     overscroll-bounce fix and new opt-in Draw Debug on-screen event
-//     logger get picked up by clients on their next "Check for Update"
-//     or fresh install.
+//     throttled Draw Debug logging (no more synchronous DOM writes inside
+//     pointer handlers) and the draw canvas's forced GPU compositor layer
+//     get picked up by clients on their next "Check for Update" or fresh
+//     install.
 
-const CACHE = "study-cards-v1.15";
+const CACHE = "study-cards-v1.16";
 
 const CORE_ASSETS = [
   "./",
