@@ -1,12 +1,11 @@
 //service-worker.js Flashcard app
-//Version 1.14
+//Version 1.15
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     Draw-mode dropped-stroke fix (pointer capture + coalesced-event
-//     handling, so quick lift/resume strokes and fast stylus input no
-//     longer drop segments) gets picked up by clients on their next
-//     "Check for Update" or fresh install.
+//     overscroll-bounce fix and new opt-in Draw Debug on-screen event
+//     logger get picked up by clients on their next "Check for Update"
+//     or fresh install.
 
-const CACHE = "study-cards-v1.14";
+const CACHE = "study-cards-v1.15";
 
 const CORE_ASSETS = [
   "./",

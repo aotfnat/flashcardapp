@@ -1,5 +1,24 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.14, SOC: Draw-mode dropped-stroke fix.
+<!-- Version 1.15, SOC: Draw-mode dropped-stroke follow-up.
+     Palm-rejection was ruled out by direct testing (issue persists even
+     with only pen or only hand touching, never both). Next candidate:
+     iOS Safari's page-level elastic overscroll ("rubber-band") bounce can
+     consume the very next touch as a "stop scrolling" gesture rather than
+     delivering it to page content as a normal touch — which would look
+     exactly like an intermittent dropped stroke-start on quick lift/
+     resume. Added `overscroll-behavior: none` on html/body to disable
+     that bounce chaining, and `touch-action: none` on .main-content-area
+     while in Draw mode so no incidental page-level pan can be in flight
+     near the draw box. Also added an opt-in "Draw Debug" tool (Settings
+     menu) since two prior fixes (v1.13 selection/callout, v1.14 pointer
+     capture + coalesced events) didn't resolve it on-device: when
+     enabled, every pointerdown/move/up/cancel/leave on the draw canvas is
+     logged with its timestamp/pointerId/pointerType/coordinates to a
+     small on-screen panel above the bottom bar, so if this fix doesn't
+     work either, the next step is reading real event data off the
+     iPad directly instead of guessing again.
+     ----------------------------------------------------------------
+     Version 1.14, SOC: Draw-mode dropped-stroke fix.
      Reports of missing/broken input in the Draw box after lifting and
      quickly resuming a stroke — much more pronounced with a stylus — traced
      to two causes: (1) a fast lift/re-touch can momentarily land the
@@ -179,6 +198,10 @@ body.light-mode {
   --modal-name-bg: #f0f0f0;
   --answer-bg: #ffffff;
   --answer-border: #cccccc;
+}
+
+html, body {
+  overscroll-behavior: none;
 }
 
 body {
@@ -370,6 +393,7 @@ body.drawing-mode #card {
 
 body.drawing-mode .main-content-area {
   padding: 50px 12px 150px;
+  touch-action: none;
 }
 
 /* iOS/iPadOS: a finger or Apple Pencil in the draw box could otherwise
@@ -1167,6 +1191,7 @@ body.dragging-active {
       <button onclick="toggleShowBoth()">Show Q&amp;A Together: <span id="showBothStatus">OFF</span></button>
       <button onclick="toggleRepeatIncorrect()">Repeat Incorrect Cards: <span id="repeatIncorrectStatus">ON</span></button>
       <button onclick="toggleTheme()">Theme: <span id="themeModeStatus">Dark</span></button>
+      <button onclick="toggleDrawDebug()">Draw Debug: <span id="drawDebugStatus">OFF</span></button>
 
       <h4>App Info</h4>
       <p id="appVersionLabel" style="color:#aaa; font-size:14px; margin:8px 0;">Version</p>
@@ -1254,6 +1279,8 @@ body.dragging-active {
   </div>
 </div>
 
+<div id="drawDebugPanel" style="display:none; position:fixed; left:8px; right:8px; bottom:calc(84px + env(safe-area-inset-bottom, 0px)); max-height:150px; overflow-y:auto; background:rgba(0,0,0,0.88); color:#8bc34a; font-family:monospace; font-size:11px; line-height:1.4; padding:8px; border-radius:8px; z-index:2500; text-align:left; white-space:pre-wrap; pointer-events:none;"></div>
+
 <div class="bottom-bar">
   <button id="showBtn" onclick="handleShow()">Show Question</button>
   <button id="correctBtn" onclick="grade(true)">Correct</button>
@@ -1334,7 +1361,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.14";
+const APP_VERSION = "1.15";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -2941,6 +2968,7 @@ function toggleRepeatIncorrect() {
 // body.drawing-mode.
 function updateDrawingModeClass() {
   document.body.classList.toggle("drawing-mode", userInputMode === "draw");
+  updateDrawDebugPanelVisibility();
 }
 
 // Light/Dark mode. The actual class was already applied (if needed) by the
@@ -4157,6 +4185,53 @@ try {
   drawLinesEnabled = localStorage.getItem("flashcardsDrawLines") === "true";
 } catch (e) { /* localStorage unavailable — default to off */ }
 
+// Draw Debug (v1.15) — an opt-in, on-screen event log for diagnosing dropped
+// strokes directly on-device (no Mac/remote inspector needed). When on, every
+// pointerdown/move/up/cancel/leave on the draw canvas is appended, with its
+// pointerId/pointerType/coordinates/timestamp, to a small fixed panel above
+// the bottom bar. Kept intentionally simple (plain array + textContent,
+// capped length) since this is a diagnostic tool, not a feature.
+let drawDebugEnabled = false;
+try {
+  drawDebugEnabled = localStorage.getItem("flashcardsDrawDebug") === "true";
+} catch (e) { /* localStorage unavailable — default to off */ }
+
+let drawDebugLines = [];
+
+function toggleDrawDebug() {
+  drawDebugEnabled = !drawDebugEnabled;
+  try {
+    localStorage.setItem("flashcardsDrawDebug", drawDebugEnabled ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+  const status = document.getElementById("drawDebugStatus");
+  if (status) status.textContent = drawDebugEnabled ? "ON" : "OFF";
+  if (!drawDebugEnabled) { drawDebugLines = []; }
+  updateDrawDebugPanelVisibility();
+}
+
+function updateDrawDebugPanelVisibility() {
+  const panel = document.getElementById("drawDebugPanel");
+  if (!panel) return;
+  panel.style.display = (drawDebugEnabled && userInputMode === "draw") ? "block" : "none";
+  if (panel.style.display === "block") {
+    panel.textContent = drawDebugLines.join("\n");
+    panel.scrollTop = panel.scrollHeight;
+  }
+}
+
+function logDrawEvent(label, e, extra) {
+  if (!drawDebugEnabled) return;
+  const t = (typeof performance !== "undefined" ? performance.now() : Date.now()).toFixed(0);
+  const line = `${t}ms ${label} id=${e.pointerId} type=${e.pointerType} press=${(e.pressure || 0).toFixed(2)} x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}${extra ? " " + extra : ""}`;
+  drawDebugLines.push(line);
+  if (drawDebugLines.length > 60) drawDebugLines.shift();
+  const panel = document.getElementById("drawDebugPanel");
+  if (panel && panel.style.display === "block") {
+    panel.textContent = drawDebugLines.join("\n");
+    panel.scrollTop = panel.scrollHeight;
+  }
+}
+
 let isDrawingStroke = false;
 let lastDrawX = 0;
 let lastDrawY = 0;
@@ -4167,6 +4242,7 @@ function getCanvasPoint(e) {
 }
 
 function startStroke(e) {
+  logDrawEvent("DOWN", e, isDrawingStroke ? "(already drawing!)" : "");
   isDrawingStroke = true;
   // Pointer capture keeps every subsequent event for this pointer routed to
   // the canvas even if the physical contact point briefly strays outside its
@@ -4198,6 +4274,8 @@ function continueStroke(e) {
     ? e.getCoalescedEvents()
     : [e];
 
+  logDrawEvent("move", e, `(n=${events.length})`);
+
   events.forEach(ev => {
     const p = getCanvasPoint(ev);
     drawCtx.beginPath();
@@ -4212,6 +4290,7 @@ function continueStroke(e) {
 }
 
 function endStroke(e) {
+  if (e) logDrawEvent(e.type, e);
   isDrawingStroke = false;
   if (e && drawCanvasEl.releasePointerCapture && drawCanvasEl.hasPointerCapture && drawCanvasEl.hasPointerCapture(e.pointerId)) {
     try { drawCanvasEl.releasePointerCapture(e.pointerId); } catch (err) { /* not critical */ }
@@ -4413,6 +4492,10 @@ if (showBothStatusEl) showBothStatusEl.textContent = showBothMode ? "ON" : "OFF"
 
 const repeatIncorrectStatusEl = document.getElementById("repeatIncorrectStatus");
 if (repeatIncorrectStatusEl) repeatIncorrectStatusEl.textContent = repeatIncorrectEnabled ? "ON" : "OFF";
+
+const drawDebugStatusEl = document.getElementById("drawDebugStatus");
+if (drawDebugStatusEl) drawDebugStatusEl.textContent = drawDebugEnabled ? "ON" : "OFF";
+updateDrawDebugPanelVisibility();
 
 // Lets the user pull a new version from inside the app instead of having to
 // delete and reinstall it. service-worker.js's own SW already self-activates
