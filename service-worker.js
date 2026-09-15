@@ -1,12 +1,12 @@
 //service-worker.js Flashcard app
-//Version 1.16
+//Version 1.17
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     throttled Draw Debug logging (no more synchronous DOM writes inside
-//     pointer handlers) and the draw canvas's forced GPU compositor layer
-//     get picked up by clients on their next "Check for Update" or fresh
-//     install.
+//     switch to Touch Events for the draw canvas on iOS/iPadOS (working
+//     around a WebKit Pointer Events bug that silently drops the
+//     pointerdown for a fast Apple Pencil lift/re-touch) gets picked up
+//     by clients on their next "Check for Update" or fresh install.
 
-const CACHE = "study-cards-v1.16";
+const CACHE = "study-cards-v1.17";
 
 const CORE_ASSETS = [
   "./",

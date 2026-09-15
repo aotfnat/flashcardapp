@@ -1,5 +1,31 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.16, SOC: Draw-mode dropped-stroke follow-up #2.
+<!-- Version 1.17, SOC: Draw-mode dropped-stroke root cause found + fixed.
+     On-device testing isolated the cause: writing "This" with Draw Debug
+     on showed only 2 of the ~4+ intended strokes ever produced a DOWN in
+     the log — the rest left no trace at all, meaning WebKit itself never
+     dispatched a pointerdown for them. Confirmed identically in a plain
+     Safari tab (ruling out the PWA/service-worker), and absent entirely
+     in Apple Notes on the same iPad with the same Pencil (ruling out an
+     OS/hardware cause). That isolates it to WebKit's Pointer Events
+     implementation for Apple Pencil specifically: Pointer Events carry an
+     extra hover-disambiguation step (for Pencil 2's hover-above-glass
+     support) that can apparently fail to recognize a new touch-down when
+     it follows a lift too quickly, and unlike a mishandled event this
+     leaves nothing for our code to react to.
+     FIX: switched the draw canvas to plain Touch Events (touchstart/
+     touchmove/touchend/touchcancel) on any touch-capable device, which
+     predate Pointer Events and have no such hover step. Touch Events also
+     keep targeting the element a touch started on for its full lifetime,
+     so the v1.14 setPointerCapture() workaround is no longer needed on
+     that path. handleTouchStart()/handleTouchMove()/handleTouchEnd() are
+     new; startStroke()/continueStroke()/endStroke() (the original Pointer
+     Events versions) are kept as a fallback for non-touch devices (mouse/
+     trackpad on desktop), chosen once at load via feature-detection
+     (drawUsesTouchEvents). Shared drawing math factored into
+     drawSegmentTo(); Draw Debug logging (touchToPointerLike()) works
+     against both paths unchanged.
+     ----------------------------------------------------------------
+     Version 1.16, SOC: Draw-mode dropped-stroke follow-up #2.
      On-device Draw Debug logging (v1.15) showed that events the page DOES
      receive are handled correctly — a full pointerdown → pointermove(s) →
      pointerup → pointerleave sequence, in order, for the pointerId that
@@ -1392,7 +1418,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.16";
+const APP_VERSION = "1.17";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -4281,21 +4307,101 @@ function logDrawEvent(label, e, extra) {
 let isDrawingStroke = false;
 let lastDrawX = 0;
 let lastDrawY = 0;
+let activeTouchId = null; // tracks which Touch.identifier is currently drawing
 
 function getCanvasPoint(e) {
   const rect = drawCanvasEl.getBoundingClientRect();
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
+// Normalizes a Touch object into the same shape logDrawEvent()/getCanvasPoint()
+// already expect from a PointerEvent, so both code paths can share them.
+// `touchType` is a Safari-only Touch property ("stylus" vs "direct") — used
+// here only to make the debug log read "pen" vs "touch", same as before.
+function touchToPointerLike(t, type) {
+  return {
+    pointerId: t.identifier,
+    pointerType: t.touchType === "stylus" ? "pen" : "touch",
+    pressure: t.force || 0,
+    clientX: t.clientX,
+    clientY: t.clientY,
+    type: type
+  };
+}
+
+function findTouchById(touchList, id) {
+  for (let i = 0; i < touchList.length; i++) {
+    if (touchList[i].identifier === id) return touchList[i];
+  }
+  return null;
+}
+
+function drawSegmentTo(p) {
+  drawCtx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--text").trim() || "#000000";
+  drawCtx.lineWidth = 2.5;
+  drawCtx.lineCap = "round";
+  drawCtx.lineJoin = "round";
+  drawCtx.beginPath();
+  drawCtx.moveTo(lastDrawX, lastDrawY);
+  drawCtx.lineTo(p.x, p.y);
+  drawCtx.stroke();
+  lastDrawX = p.x;
+  lastDrawY = p.y;
+}
+
+// ---------------------------------------------------------------------
+// Touch Events (primary path on iOS/iPadOS — see v1.17 SOC note above).
+// On-device Draw Debug logging confirmed WebKit's Pointer Events pipeline
+// for Apple Pencil silently fails to dispatch a new pointerdown for a fast
+// lift-then-touch-down, with nothing at all reaching JS for the dropped
+// stroke — reproduced identically in a plain Safari tab (so not a PWA/
+// service-worker issue), and absent in Apple Notes on the same iPad/Pencil
+// (so not an OS/hardware issue). That isolates it to Pointer Events
+// specifically, which have an extra hover-disambiguation step (for Pencil
+// 2's hover support) that plain Touch Events don't have. Touch Events also
+// keep targeting the element a touch started on for its whole lifetime, so
+// this doesn't need the setPointerCapture() workaround the Pointer Events
+// path used.
+// ---------------------------------------------------------------------
+
+function handleTouchStart(e) {
+  const t = e.changedTouches[0];
+  if (!t) return;
+  logDrawEvent("DOWN", touchToPointerLike(t, "touchstart"), isDrawingStroke ? "(already drawing!)" : "");
+  activeTouchId = t.identifier;
+  isDrawingStroke = true;
+  const p = getCanvasPoint(t);
+  lastDrawX = p.x;
+  lastDrawY = p.y;
+  e.preventDefault();
+}
+
+function handleTouchMove(e) {
+  if (!isDrawingStroke || activeTouchId === null) return;
+  const t = findTouchById(e.changedTouches, activeTouchId);
+  if (!t) return;
+  logDrawEvent("move", touchToPointerLike(t, "touchmove"));
+  drawSegmentTo(getCanvasPoint(t));
+  e.preventDefault();
+}
+
+function handleTouchEnd(e) {
+  const t = findTouchById(e.changedTouches, activeTouchId);
+  if (t) logDrawEvent(e.type, touchToPointerLike(t, e.type));
+  if (!t && activeTouchId !== null) return; // an unrelated touch ended — ignore
+  isDrawingStroke = false;
+  activeTouchId = null;
+  e.preventDefault();
+}
+
+// ---------------------------------------------------------------------
+// Pointer Events (fallback path — mouse/trackpad on desktop browsers only;
+// iOS/iPadOS use Touch Events above instead, per the v1.17 SOC note).
+// ---------------------------------------------------------------------
+
 function startStroke(e) {
   logDrawEvent("DOWN", e, isDrawingStroke ? "(already drawing!)" : "");
   isDrawingStroke = true;
-  // Pointer capture keeps every subsequent event for this pointer routed to
-  // the canvas even if the physical contact point briefly strays outside its
-  // exact bounds — which happens often on a fast lift/re-touch, especially
-  // with a stylus's smaller contact area. Without this, that momentary
-  // "outside the element" state fires pointerleave and silently ends the
-  // stroke, dropping whatever comes right after the resume.
   if (drawCanvasEl.setPointerCapture) {
     try { drawCanvasEl.setPointerCapture(e.pointerId); } catch (err) { /* not critical */ }
   }
@@ -4307,31 +4413,11 @@ function startStroke(e) {
 
 function continueStroke(e) {
   if (!isDrawingStroke) return;
-  drawCtx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--text").trim() || "#000000";
-  drawCtx.lineWidth = 2.5;
-  drawCtx.lineCap = "round";
-  drawCtx.lineJoin = "round";
-
-  // A stylus (Apple Pencil in particular) reports position at a much higher
-  // rate than the browser fires pointermove callbacks. getCoalescedEvents()
-  // recovers the in-between samples the browser batched up, so fast strokes
-  // don't end up with visible gaps/missing segments between callbacks.
   const events = (typeof e.getCoalescedEvents === "function" && e.getCoalescedEvents().length)
     ? e.getCoalescedEvents()
     : [e];
-
   logDrawEvent("move", e, `(n=${events.length})`);
-
-  events.forEach(ev => {
-    const p = getCanvasPoint(ev);
-    drawCtx.beginPath();
-    drawCtx.moveTo(lastDrawX, lastDrawY);
-    drawCtx.lineTo(p.x, p.y);
-    drawCtx.stroke();
-    lastDrawX = p.x;
-    lastDrawY = p.y;
-  });
-
+  events.forEach(ev => drawSegmentTo(getCanvasPoint(ev)));
   e.preventDefault();
 }
 
@@ -4343,11 +4429,23 @@ function endStroke(e) {
   }
 }
 
-drawCanvasEl.addEventListener("pointerdown", startStroke);
-drawCanvasEl.addEventListener("pointermove", continueStroke);
-drawCanvasEl.addEventListener("pointerup", endStroke);
-drawCanvasEl.addEventListener("pointercancel", endStroke);
-drawCanvasEl.addEventListener("pointerleave", endStroke);
+// Feature-detect touch support once at load: iPadOS/iOS take the Touch
+// Events path (see SOC note); anything without touch (desktop mouse/
+// trackpad) keeps using Pointer Events.
+const drawUsesTouchEvents = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+
+if (drawUsesTouchEvents) {
+  drawCanvasEl.addEventListener("touchstart", handleTouchStart, { passive: false });
+  drawCanvasEl.addEventListener("touchmove", handleTouchMove, { passive: false });
+  drawCanvasEl.addEventListener("touchend", handleTouchEnd, { passive: false });
+  drawCanvasEl.addEventListener("touchcancel", handleTouchEnd, { passive: false });
+} else {
+  drawCanvasEl.addEventListener("pointerdown", startStroke);
+  drawCanvasEl.addEventListener("pointermove", continueStroke);
+  drawCanvasEl.addEventListener("pointerup", endStroke);
+  drawCanvasEl.addEventListener("pointercancel", endStroke);
+  drawCanvasEl.addEventListener("pointerleave", endStroke);
+}
 
 // Repaints just the ruled-lines background layer. Safe to call any time —
 // never touches drawCanvasEl, so it never loses the learner's strokes.
