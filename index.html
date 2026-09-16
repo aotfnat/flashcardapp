@@ -1,5 +1,51 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.17, SOC: Draw-mode dropped-stroke root cause found + fixed.
+<!-- Version 1.18, SOC: Deck study analysis + Add Deck UX fix.
+     (1) ADD DECK ACTIVATES IT: addDeck() now makes the newly created deck
+     the active deck (currentDeck) as soon as the name is confirmed —
+     mirroring selectDeckAndStudy()'s outgoing-deck save/timer-pause
+     handling — so Add/Edit Cards is immediately ready to use against it
+     without an extra tap in the Decks list.
+     (2) DECK STUDY STATS: each deck now accumulates deck.stats = 
+     { completions, cards: {id: {views, correct, incorrect}}, 
+     completionTimes: [] }, persisted alongside the deck itself so it
+     survives export/restore. recordCardView()/recordCardGrade()/
+     recordDeckCompletion() are the three write paths — view counts are
+     deduped per (deck,sessionIndex) via lastViewRecorded so resuming a
+     saved session or flipping Q/A on the same card doesn't inflate the
+     count, while navigating Back to an earlier card correctly counts as
+     a fresh view. Grading (Correct/Incorrect) updates per-card accuracy;
+     finishing a pass (showDeckComplete(), single-deck study only —
+     multi-deck study is intentionally out of scope for this feature)
+     increments completions and, if enabled, records that pass's time.
+     Deck Complete now renders a short stats summary (completions, cards
+     viewed, accuracy, last time) via formatDeckStatsSummary(). A new
+     Analysis menu section (between Import/Export and Settings) shows the
+     active deck's full stats, including a per-card breakdown, refreshed
+     from updateContextLabels() via renderAnalysisSection().
+     (3) TIME TO COMPLETION: a new Settings toggle ("Track Time to
+     Completion", default OFF) turns on a per-deck stopwatch for the
+     current study pass, shown in the header immediately left of the flag
+     icon (#deckTimerDisplay, ticking via a 1s setInterval calling
+     updateTimerDisplay()). The clock only advances while its deck is the
+     one on screen, a pass is actually in progress, and the tab is
+     visible: timerAccumulatedMs/timerSegmentStartTs track elapsed time
+     across pause/resume, pauseDeckTimer()/resumeDeckTimer() are called on
+     deck switches (selectDeckAndStudy(), addDeck(), entering multi-study)
+     and on visibilitychange/pagehide, and getCurrentTimerElapsedMs() is
+     persisted into sessionState.decks[name].timerElapsedMs (via
+     saveSession()) so an in-progress pass's clock survives the app being
+     backgrounded/killed and reloaded. resumeDeckTimer() is also called
+     from updateBackButton() (alongside the existing refreshFlagButton()
+     call) so the clock naturally starts/keeps ticking through every
+     study-state transition without its own call site everywhere.
+     (4) PAUSE STATS TRACKING: a second Settings toggle ("Track Deck
+     Stats", default ON) is the master switch — recordCardView()/
+     recordCardGrade()/recordDeckCompletion() and the timer's
+     resumeDeckTimer() all no-op while it's off, so turning it off simply
+     freezes stats/timing in place without deleting any already-recorded
+     history.
+     ----------------------------------------------------------------
+     Version 1.17, SOC: Draw-mode dropped-stroke root cause found + fixed.
      On-device testing isolated the cause: writing "This" with Draw Debug
      on showed only 2 of the ~4+ intended strokes ever produced a DOWN in
      the log — the rest left no trace at all, meaning WebKit itself never
@@ -1240,6 +1286,17 @@ body.dragging-active {
     </div>
   </div>
 
+  <!-- ANALYSIS: collapsed by default. Shows the active deck's study stats
+       (completions, time-to-completion history, per-card views/accuracy).
+       Not meaningful during multi-deck study or with no deck selected. -->
+  <div class="menu-section" id="sectionAnalysis">
+    <h3 class="menu-section-header" onclick="toggleMenuSection('sectionAnalysis')">Analysis</h3>
+    <div class="menu-section-content">
+      <p class="deck-context-label">Viewing stats for: <strong id="analysisDeckName">–</strong></p>
+      <div id="analysisContent"></div>
+    </div>
+  </div>
+
   <!-- SETTINGS: collapsed by default -->
   <div class="menu-section" id="sectionSettings">
     <h3 class="menu-section-header" onclick="toggleMenuSection('sectionSettings')">Settings</h3>
@@ -1247,6 +1304,8 @@ body.dragging-active {
       <button onclick="toggleInputMode()">User Input Mode: <span id="inputModeStatus">OFF</span></button>
       <button onclick="toggleShowBoth()">Show Q&amp;A Together: <span id="showBothStatus">OFF</span></button>
       <button onclick="toggleRepeatIncorrect()">Repeat Incorrect Cards: <span id="repeatIncorrectStatus">ON</span></button>
+      <button onclick="toggleTimeToCompletion()">Track Time to Completion: <span id="timeToCompletionStatus">OFF</span></button>
+      <button onclick="toggleStatsTracking()">Track Deck Stats: <span id="statsTrackingStatus">ON</span></button>
       <button onclick="toggleTheme()">Theme: <span id="themeModeStatus">Dark</span></button>
       <button onclick="toggleDrawDebug()">Draw Debug: <span id="drawDebugStatus">OFF</span></button>
 
@@ -1304,6 +1363,8 @@ body.dragging-active {
 <button class="top-icon-btn menuBtn" onclick="toggleMenu()" aria-label="Open menu">☰</button>
 
 <div class="top-right-controls">
+  <div id="deckTimerDisplay" class="card-counter" style="display:none; cursor:default;" aria-label="Time studying this deck">0:00</div>
+
   <button class="top-icon-btn" id="flagBtn" onclick="toggleFlagCurrentCard()" aria-label="Add to Focused Study" style="display:none;">
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
       <line x1="5" y1="3" x2="5" y2="21"/>
@@ -1371,6 +1432,29 @@ try {
   if (savedRepeat !== null) repeatIncorrectEnabled = savedRepeat === "true";
 } catch (e) { /* localStorage unavailable — default to on */ }
 
+// ---------------------------------------------------------------------
+// Deck study analysis (v1.18): completions/views/accuracy live on each
+// deck as deck.stats (see ensureDeckStats()); the time-to-completion
+// stopwatch is session-local (timerAccumulatedMs/timerSegmentStartTs)
+// and only persisted into sessionState (see saveSession()) so an
+// in-progress pass's clock survives backgrounding but a genuinely new
+// pass always starts back at zero.
+// ---------------------------------------------------------------------
+let timeToCompletionEnabled = false;
+try {
+  timeToCompletionEnabled = localStorage.getItem("flashcardsTimeToCompletion") === "true";
+} catch (e) { /* localStorage unavailable — default to off */ }
+
+let deckStatsTrackingEnabled = true;
+try {
+  const savedStatsTracking = localStorage.getItem("flashcardsStatsTracking");
+  if (savedStatsTracking !== null) deckStatsTrackingEnabled = savedStatsTracking === "true";
+} catch (e) { /* localStorage unavailable — default to on */ }
+
+let timerAccumulatedMs = 0;     // ms accumulated for currentDeck's in-progress pass, excluding any currently-running segment
+let timerSegmentStartTs = null; // Date.now() when the current running segment began, or null while paused
+let lastViewRecorded = { deck: null, index: null }; // dedupes recordCardView() across re-renders of the same card
+
 let data = loadData();
 let currentDeck = null;
 
@@ -1418,7 +1502,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.17";
+const APP_VERSION = "1.18";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -1765,6 +1849,10 @@ function removeFocusedRefsFor(deckName, cardId) {
 // shared by deck deletion and by the flag-toggle fallback for when
 // unflagging removes the last card from an actively-studied Focused deck.
 function resetToNoDeckSelected() {
+  pauseDeckTimer();
+  timerAccumulatedMs = 0;
+  lastViewRecorded = { deck: null, index: null };
+
   currentDeck = null;
   sessionQueue = [];
   sessionIndex = 0;
@@ -1905,6 +1993,216 @@ function refreshFlagButton() {
   btn.setAttribute("aria-label", flagged ? "Remove from Focused Study" : "Add to Focused Study");
 }
 
+// ---------------------------------------------------------------------
+// Deck study analysis (v1.18) — stats storage + the time-to-completion
+// stopwatch. Kept deliberately scoped to single-deck study: multi-deck
+// study has no single "deck" to attribute a pass/timer to, so it neither
+// records stats nor runs the clock.
+// ---------------------------------------------------------------------
+
+function ensureDeckStats(deckName) {
+  const deck = data.decks[deckName];
+  if (!deck) return null;
+  if (!deck.stats || typeof deck.stats !== "object") {
+    deck.stats = { completions: 0, cards: {}, completionTimes: [] };
+  }
+  if (!deck.stats.cards || typeof deck.stats.cards !== "object") deck.stats.cards = {};
+  if (!Array.isArray(deck.stats.completionTimes)) deck.stats.completionTimes = [];
+  if (typeof deck.stats.completions !== "number") deck.stats.completions = 0;
+  return deck.stats;
+}
+
+function ensureCardStats(deckName, cardId) {
+  const stats = ensureDeckStats(deckName);
+  if (!stats || !cardId) return null;
+  if (!stats.cards[cardId] || typeof stats.cards[cardId] !== "object") {
+    stats.cards[cardId] = { views: 0, correct: 0, incorrect: 0 };
+  }
+  return stats.cards[cardId];
+}
+
+// Counts a view of the card currently at `index` in `deckName`'s session
+// queue, deduped against the last (deck, index) pair recorded so that
+// re-rendering the same card — resuming a saved session, or flipping back
+// from the answer to the question — never double-counts. Navigating to a
+// genuinely different index (including Back, or "Go to Card") always
+// counts as a fresh view.
+function recordCardView(deckName, index, cardId) {
+  if (!deckStatsTrackingEnabled || !cardId) return;
+  if (lastViewRecorded.deck === deckName && lastViewRecorded.index === index) return;
+  lastViewRecorded = { deck: deckName, index };
+  const cs = ensureCardStats(deckName, cardId);
+  if (!cs) return;
+  cs.views++;
+  save();
+}
+
+function recordCardGrade(deckName, cardId, correct) {
+  if (!deckStatsTrackingEnabled || !cardId) return;
+  const cs = ensureCardStats(deckName, cardId);
+  if (!cs) return;
+  if (correct) cs.correct++; else cs.incorrect++;
+  save();
+}
+
+// Called once per finished single-deck pass (showDeckComplete()). Bumps
+// the completion count and, if time-to-completion is on, freezes the
+// clock and files this pass's total under completionTimes.
+function recordDeckCompletion(deckName) {
+  if (!deckStatsTrackingEnabled) return;
+  const stats = ensureDeckStats(deckName);
+  if (!stats) return;
+  stats.completions++;
+  if (timeToCompletionEnabled) {
+    pauseDeckTimer();
+    stats.completionTimes.push(timerAccumulatedMs);
+  }
+  save();
+}
+
+function formatDuration(ms) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+// Short stats blurb rendered under "Deck Complete!" — kept to a handful of
+// headline numbers; the full per-card breakdown lives in the Analysis menu.
+function formatDeckStatsSummary(deckName) {
+  const deck = data.decks[deckName];
+  const stats = deck && deck.stats;
+  if (!stats) return "";
+
+  const cardIds = Object.keys(stats.cards);
+  let totalViews = 0, totalCorrect = 0, totalIncorrect = 0;
+  cardIds.forEach(id => {
+    const c = stats.cards[id];
+    totalViews += c.views;
+    totalCorrect += c.correct;
+    totalIncorrect += c.incorrect;
+  });
+  const totalGraded = totalCorrect + totalIncorrect;
+  const accuracyText = totalGraded > 0 ? Math.round((totalCorrect / totalGraded) * 100) + "%" : "–";
+
+  let html = '<div style="font-size:15px; color:var(--muted-text); margin-top:4px; line-height:1.7; text-align:left; display:inline-block;">';
+  html += `Completed <strong style="color:var(--text);">${stats.completions}</strong> time${stats.completions === 1 ? "" : "s"}<br>`;
+  html += `Cards viewed: <strong style="color:var(--text);">${totalViews}</strong><br>`;
+  html += `Accuracy: <strong style="color:var(--text);">${accuracyText}</strong>`;
+  if (timeToCompletionEnabled && stats.completionTimes.length > 0) {
+    const lastTime = stats.completionTimes[stats.completionTimes.length - 1];
+    html += `<br>Time: <strong style="color:var(--text);">${formatDuration(lastTime)}</strong>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+// Rebuilds the Analysis menu section from the current deck's stats. Called
+// from updateContextLabels() so it stays current through every study-state
+// transition without needing its own call site everywhere.
+function renderAnalysisSection() {
+  const nameEl = document.getElementById("analysisDeckName");
+  const contentEl = document.getElementById("analysisContent");
+  if (!nameEl || !contentEl) return;
+
+  if (inMultiStudy) {
+    nameEl.textContent = "Not available during multi-deck study";
+    contentEl.innerHTML = "";
+    return;
+  }
+  if (!currentDeck || !data.decks[currentDeck]) {
+    nameEl.textContent = "No deck selected";
+    contentEl.innerHTML = "";
+    return;
+  }
+
+  nameEl.textContent = currentDeck;
+  const deck = data.decks[currentDeck];
+  const stats = ensureDeckStats(currentDeck);
+  if (!stats) { contentEl.innerHTML = ""; return; }
+
+  let html = `<p style="margin:4px 0;">Completed: <strong>${stats.completions}</strong> time${stats.completions === 1 ? "" : "s"}</p>`;
+
+  if (stats.completionTimes.length > 0) {
+    const last = stats.completionTimes[stats.completionTimes.length - 1];
+    const avg = stats.completionTimes.reduce((a, b) => a + b, 0) / stats.completionTimes.length;
+    html += `<p style="margin:4px 0;">Last time: <strong>${formatDuration(last)}</strong> · Avg: <strong>${formatDuration(avg)}</strong></p>`;
+  }
+
+  html += '<h4>Per-Card Stats</h4>';
+
+  // Focused Study stores {refDeck,refId} pointers rather than real cards —
+  // resolve through them so the breakdown shows the actual question text.
+  const orderedCards = isFocusedDeck(currentDeck)
+    ? deck.cards.map((_, i) => resolveCardRef(currentDeck, i)).filter(Boolean).map(r => r.card)
+    : deck.cards;
+
+  const rows = orderedCards
+    .map((card, i) => ({ card, i, cs: stats.cards[card.id] }))
+    .filter(r => r.cs);
+
+  if (rows.length === 0) {
+    html += '<p style="color:#888;">No card activity recorded yet.</p>';
+  } else {
+    html += '<div style="max-height:260px; overflow-y:auto;">';
+    rows.forEach(({ card, i, cs }) => {
+      const graded = cs.correct + cs.incorrect;
+      const acc = graded > 0 ? Math.round((cs.correct / graded) * 100) + "%" : "–";
+      let preview = card.q.substring(0, 30);
+      if (card.q.length > 30) preview += "...";
+      html += `<div style="padding:6px 0; border-bottom:1px solid var(--border-color); font-size:14px;">`
+            + `${i + 1}. ${preview || "(empty question)"}<br>`
+            + `<span style="color:var(--muted-text);">Views: ${cs.views} · Accuracy: ${acc} (${cs.correct}/${graded})</span>`
+            + `</div>`;
+    });
+    html += '</div>';
+  }
+
+  contentEl.innerHTML = html;
+}
+
+// Returns the current pass's total elapsed time without mutating state —
+// timerAccumulatedMs plus whatever's elapsed in the currently-running
+// segment, if any. Used for both the live header display and for
+// persisting a non-destructive snapshot into sessionState.
+function getCurrentTimerElapsedMs() {
+  return timerAccumulatedMs + (timerSegmentStartTs !== null ? (Date.now() - timerSegmentStartTs) : 0);
+}
+
+function pauseDeckTimer() {
+  if (timerSegmentStartTs !== null) {
+    timerAccumulatedMs += Date.now() - timerSegmentStartTs;
+    timerSegmentStartTs = null;
+  }
+}
+
+// Starts the clock running again if — and only if — every condition for
+// "actively studying this deck right now" holds: tracking is on, a single
+// (not multi) deck is selected, the learner is past the "Tap to begin"
+// state, the pass isn't already complete, and the tab is actually visible.
+// Safe to call liberally; it's a no-op whenever any condition fails.
+function resumeDeckTimer() {
+  if (!timeToCompletionEnabled || !deckStatsTrackingEnabled) return;
+  if (inMultiStudy || !currentDeck) return;
+  if (firstShow) return;
+  if (!sessionQueue.length || sessionIndex >= sessionQueue.length) return;
+  if (document.visibilityState === "hidden") return;
+  if (timerSegmentStartTs === null) timerSegmentStartTs = Date.now();
+}
+
+function updateTimerDisplay() {
+  const el = document.getElementById("deckTimerDisplay");
+  if (!el) return;
+  const shouldShow = timeToCompletionEnabled && deckStatsTrackingEnabled && !inMultiStudy && currentDeck &&
+    !firstShow && sessionQueue.length > 0 && sessionIndex < sessionQueue.length;
+  if (!shouldShow) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "block";
+  el.textContent = formatDuration(getCurrentTimerElapsedMs());
+}
+
 function save(){
   try {
     localStorage.setItem("studyData", JSON.stringify(data));
@@ -1974,7 +2272,8 @@ function saveSession() {
           repeat: repeatQueue.slice(),
           index: sessionIndex,
           showingAnswer: showingAnswer,
-          firstShow: firstShow
+          firstShow: firstShow,
+          timerElapsedMs: getCurrentTimerElapsedMs()
         };
       }
     }
@@ -2131,6 +2430,8 @@ function handleBackOrFlip() {
 
 function updateBackButton() {
   refreshFlagButton();
+  resumeDeckTimer();
+  updateTimerDisplay();
 
   if (inMultiStudy) {
     backFlipBtn.style.display = "flex";
@@ -2313,6 +2614,7 @@ function selectDeckAndStudy(name) {
     multiStudyDecks = null;
   }
 
+  pauseDeckTimer(); // freeze the outgoing deck's elapsed time before switching
   if (currentDeck && currentDeck !== name) saveSession(); // flush outgoing deck's position first
   currentDeck = name;
 
@@ -2745,9 +3047,21 @@ function addDeck() {
     folder: null
   };
   data.rootOrder.push({ type: "deck", name });
-
   save();
-  renderDecks();
+
+  // Newly created decks become the active deck right away, so Add/Edit
+  // Cards is immediately ready to use against it without an extra tap in
+  // the Decks list — mirrors selectDeckAndStudy()'s outgoing-deck
+  // save/timer-pause handling.
+  if (inMultiStudy) {
+    saveMultiSession();
+    inMultiStudy = false;
+    multiStudyDecks = null;
+  }
+  pauseDeckTimer();
+  if (currentDeck && currentDeck !== name) saveSession();
+  currentDeck = name;
+  startSession(true); // also calls renderDecks()/renderCardList()
 }
 
 function addFolder() {
@@ -3006,6 +3320,48 @@ function toggleShowBoth() {
   }
 }
 
+// Toggles the time-to-completion stopwatch feature on/off. Turning it off
+// just pauses/hides the clock (already-recorded completion times are kept);
+// turning it back on resumes ticking immediately if a pass is in progress.
+function toggleTimeToCompletion() {
+  timeToCompletionEnabled = !timeToCompletionEnabled;
+  try {
+    localStorage.setItem("flashcardsTimeToCompletion", timeToCompletionEnabled ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+
+  const status = document.getElementById("timeToCompletionStatus");
+  if (status) status.textContent = timeToCompletionEnabled ? "ON" : "OFF";
+
+  if (timeToCompletionEnabled) {
+    resumeDeckTimer();
+  } else {
+    pauseDeckTimer();
+  }
+  updateTimerDisplay();
+}
+
+// Master switch for deck study stats (views, accuracy, completions, and
+// the time-to-completion clock). Turning it off freezes tracking in place
+// without deleting any history already recorded; turning it back on
+// resumes from here.
+function toggleStatsTracking() {
+  deckStatsTrackingEnabled = !deckStatsTrackingEnabled;
+  try {
+    localStorage.setItem("flashcardsStatsTracking", deckStatsTrackingEnabled ? "true" : "false");
+  } catch (e) { /* best effort — preference just won't persist */ }
+
+  const status = document.getElementById("statsTrackingStatus");
+  if (status) status.textContent = deckStatsTrackingEnabled ? "ON" : "OFF";
+
+  if (deckStatsTrackingEnabled) {
+    resumeDeckTimer();
+  } else {
+    pauseDeckTimer();
+  }
+  updateTimerDisplay();
+  renderAnalysisSection();
+}
+
 // Toggles whether cards marked Incorrect get re-queued at the end of the
 // current pass. Only affects grading going forward — it doesn't retroactively
 // touch a repeat queue that's already been built for the in-progress pass.
@@ -3083,6 +3439,7 @@ function updateContextLabels() {
   if (editLabel) editLabel.textContent = label;
   updateShuffleStatus();
   updateAddEditAvailability();
+  renderAnalysisSection();
 }
 
 // Add Card / Edit Cards only make sense against one unambiguous, real deck,
@@ -3140,12 +3497,15 @@ function startSession(resumeIfAvailable = true) {
 
   const saved = resumeIfAvailable ? sessionState.decks[currentDeck] : null;
 
+  timerSegmentStartTs = null; // always start paused; resumeDeckTimer() below decides if it should tick
+
   if (saved && isValidSavedSession(saved, deck.cards.length)) {
     sessionQueue = saved.queue.slice();
     repeatQueue = saved.repeat.slice();
     sessionIndex = saved.index;
     showingAnswer = !!saved.showingAnswer;
     firstShow = !!saved.firstShow;
+    timerAccumulatedMs = typeof saved.timerElapsedMs === "number" ? saved.timerElapsedMs : 0;
   } else {
     // Fresh pass. Shuffle mode shuffles ONCE up front (a real Fisher–Yates
     // shuffle over card indices) so every card is guaranteed to appear
@@ -3156,6 +3516,7 @@ function startSession(resumeIfAvailable = true) {
     repeatQueue = [];
     showingAnswer = false;
     firstShow = true;
+    timerAccumulatedMs = 0;
   }
 
   markDoneBtn.innerText = "Mark Done ✔";
@@ -3169,7 +3530,7 @@ function startSession(resumeIfAvailable = true) {
 
   renderDecks();   // ← ensures highlight updates if coming from restart/complete
   renderCardList();
-  updateBackButton();
+  updateBackButton();   // also resumes the timer + refreshes its display, if applicable
   updateCardCounter();
   saveSession();
 }
@@ -3278,6 +3639,7 @@ function showQuestion() {
     return;
   }
   const card = resolved.card;
+  recordCardView(currentDeck, sessionIndex, card.id);
 
   if (showBothMode) {
     // Combined view: no separate reveal step, so treat the card as
@@ -3389,7 +3751,10 @@ function showAnswer() {
 // Shared "end of pass, nothing left to repeat" rendering, used by both
 // grade() (normal/graded study) and advanceCard() (Show Q&A Together mode).
 function showDeckComplete() {
-  cardEl.innerHTML = '<strong>Deck Complete!</strong><br><br>';
+  recordDeckCompletion(currentDeck);
+  cardEl.innerHTML = '<strong>Deck Complete!</strong><br><br>' + formatDeckStatsSummary(currentDeck);
+  renderAnalysisSection();
+  updateTimerDisplay();
 
   // Change button to "Restart Deck"
   showBtn.innerText = "Restart Deck";
@@ -3415,6 +3780,9 @@ function grade(correct) {
   if (inMultiStudy) { gradeMulti(correct); return; }
 
   const cardIndex = sessionQueue[sessionIndex];
+  const resolvedForGrade = resolveCardRef(currentDeck, cardIndex);
+  if (resolvedForGrade) recordCardGrade(currentDeck, resolvedForGrade.card.id, correct);
+
   if (!correct && repeatIncorrectEnabled) {
     repeatQueue.push(cardIndex); // Add incorrect cards' indices to repeatQueue
   }
@@ -3507,6 +3875,7 @@ function startMultiStudy(deckNames, shuffleTogether, resumeIfAvailable = true) {
     return;
   }
 
+  pauseDeckTimer(); // multi-deck study doesn't track a single deck's timer
   inMultiStudy = true;
   currentDeck = null;
   multiStudyDecks = validNames;
@@ -3999,13 +4368,20 @@ function restoreFromBackup() {
                   // an older backup) so flagging can reliably reference it.
                   incoming.cards.forEach(c => { if (c && !c.id) c.id = genCardId(); });
                 }
-                data.decks[deckName] = {
+                const restoredDeck = {
                   cards: incoming.cards,
                   mode: incoming.mode === "shuffle" ? "shuffle" : "sequential",
                   done: !!incoming.done,
                   folder: typeof incoming.folder === "string" ? incoming.folder : null,
                   isFocused: isFocusedIncoming
                 };
+                // Carry over previously-recorded stats if the backup has
+                // them (older backups won't — ensureDeckStats() lazily
+                // initializes a fresh, empty stats object in that case).
+                if (incoming.stats && typeof incoming.stats === "object") {
+                  restoredDeck.stats = incoming.stats;
+                }
+                data.decks[deckName] = restoredDeck;
                 restoredCount++;
               } else {
                 skipped++;
@@ -4195,6 +4571,12 @@ function deleteCard() {
 
   // Drop any Focused Study pointer(s) that referenced this now-deleted card.
   removeFocusedRefsFor(currentDeck, removedId);
+
+  // Its recorded stats (views/accuracy) are meaningless once the card is
+  // gone — clean them up rather than leaving an orphaned entry behind.
+  if (removedId && deck.stats && deck.stats.cards && deck.stats.cards[removedId]) {
+    delete deck.stats.cards[removedId];
+  }
 
   save();
   renderCardList();
@@ -4525,9 +4907,18 @@ window.addEventListener("resize", () => {
 // whenever the app is about to leave the foreground, not just after each
 // study action.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") saveSession();
+  if (document.visibilityState === "hidden") {
+    pauseDeckTimer();
+    saveSession();
+  } else {
+    resumeDeckTimer();
+    updateTimerDisplay();
+  }
 });
-window.addEventListener("pagehide", saveSession);
+window.addEventListener("pagehide", () => {
+  pauseDeckTimer();
+  saveSession();
+});
 
 // ---------------------------------------------------------------------
 // "Go to Card" — tapping the card counter opens a small modal to jump
@@ -4640,6 +5031,15 @@ if (repeatIncorrectStatusEl) repeatIncorrectStatusEl.textContent = repeatIncorre
 const drawDebugStatusEl = document.getElementById("drawDebugStatus");
 if (drawDebugStatusEl) drawDebugStatusEl.textContent = drawDebugEnabled ? "ON" : "OFF";
 updateDrawDebugPanelVisibility();
+
+const timeToCompletionStatusEl = document.getElementById("timeToCompletionStatus");
+if (timeToCompletionStatusEl) timeToCompletionStatusEl.textContent = timeToCompletionEnabled ? "ON" : "OFF";
+
+const statsTrackingStatusEl = document.getElementById("statsTrackingStatus");
+if (statsTrackingStatusEl) statsTrackingStatusEl.textContent = deckStatsTrackingEnabled ? "ON" : "OFF";
+
+updateTimerDisplay();
+setInterval(updateTimerDisplay, 1000); // ticks the header clock once per second while it's shown
 
 // Lets the user pull a new version from inside the app instead of having to
 // delete and reinstall it. service-worker.js's own SW already self-activates

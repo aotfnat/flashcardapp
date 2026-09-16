@@ -1,12 +1,11 @@
 //service-worker.js Flashcard app
-//Version 1.17
+//Version 1.18
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     switch to Touch Events for the draw canvas on iOS/iPadOS (working
-//     around a WebKit Pointer Events bug that silently drops the
-//     pointerdown for a fast Apple Pencil lift/re-touch) gets picked up
-//     by clients on their next "Check for Update" or fresh install.
+//     new deck study analysis (stats tracking, time-to-completion timer,
+//     Analysis menu section) and the Add Deck active-deck fix get picked
+//     up by clients on their next "Check for Update" or fresh install.
 
-const CACHE = "study-cards-v1.17";
+const CACHE = "study-cards-v1.18";
 
 const CORE_ASSETS = [
   "./",
