@@ -1,5 +1,21 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.18, SOC: Deck study analysis + Add Deck UX fix.
+<!-- Version 1.19, SOC: Deck analysis polish.
+     (1) Deck Complete's stats summary now renders as its own block below
+     the heading (a bordered block with margin-top, in its own <div>
+     rather than sharing a line via <br><br>) instead of appearing to sit
+     alongside it. The same fix applies to restoreCardDisplay()'s
+     resume-into-an-already-completed-pass rendering, which now also shows
+     the summary (still without re-recording a completion).
+     (2) Best time: Math.min() across stats.completionTimes is now shown
+     alongside Last time and Avg in the Analysis section, and alongside
+     Time in the Deck Complete summary (both gated on Track Time to
+     Completion being on, matching the existing Last-time behavior).
+     (3) New "Reset Stats" button in the Analysis section — resetDeckStats()
+     confirms, then replaces the active deck's stats object with a fresh
+     empty one (completions/cards/completionTimes), leaving any
+     in-progress pass's own queue/index/timer untouched.
+     ----------------------------------------------------------------
+     Version 1.18, SOC: Deck study analysis + Add Deck UX fix.
      (1) ADD DECK ACTIVATES IT: addDeck() now makes the newly created deck
      the active deck (currentDeck) as soon as the name is confirmed —
      mirroring selectDeckAndStudy()'s outgoing-deck save/timer-pause
@@ -1294,6 +1310,7 @@ body.dragging-active {
     <div class="menu-section-content">
       <p class="deck-context-label">Viewing stats for: <strong id="analysisDeckName">–</strong></p>
       <div id="analysisContent"></div>
+      <button onclick="resetDeckStats()" style="background:#c62828; color:white; margin-top:12px;">Reset Stats</button>
     </div>
   </div>
 
@@ -1502,7 +1519,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.18";
+const APP_VERSION = "1.19";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -2085,16 +2102,37 @@ function formatDeckStatsSummary(deckName) {
   const totalGraded = totalCorrect + totalIncorrect;
   const accuracyText = totalGraded > 0 ? Math.round((totalCorrect / totalGraded) * 100) + "%" : "–";
 
-  let html = '<div style="font-size:15px; color:var(--muted-text); margin-top:4px; line-height:1.7; text-align:left; display:inline-block;">';
+  let html = '<div style="font-size:15px; color:var(--muted-text); margin-top:20px; padding-top:16px; border-top:1px solid var(--border-color); line-height:1.7; text-align:left; display:inline-block;">';
   html += `Completed <strong style="color:var(--text);">${stats.completions}</strong> time${stats.completions === 1 ? "" : "s"}<br>`;
   html += `Cards viewed: <strong style="color:var(--text);">${totalViews}</strong><br>`;
   html += `Accuracy: <strong style="color:var(--text);">${accuracyText}</strong>`;
   if (timeToCompletionEnabled && stats.completionTimes.length > 0) {
     const lastTime = stats.completionTimes[stats.completionTimes.length - 1];
+    const bestTime = Math.min(...stats.completionTimes);
     html += `<br>Time: <strong style="color:var(--text);">${formatDuration(lastTime)}</strong>`;
+    html += ` · Best: <strong style="color:var(--text);">${formatDuration(bestTime)}</strong>`;
   }
   html += '</div>';
   return html;
+}
+
+// Clears all recorded stats (completions, per-card views/accuracy, and
+// completion-time history) for the active deck. Doesn't touch a currently
+// in-progress pass's own queue/index/timer — only the historical record.
+function resetDeckStats() {
+  if (inMultiStudy) {
+    alert("Select a single deck first — stats can't be reset during multi-deck study.");
+    return;
+  }
+  if (!currentDeck || !data.decks[currentDeck]) {
+    alert("Select a deck first.");
+    return;
+  }
+  if (!confirm(`Reset all recorded stats for "${currentDeck}"? This cannot be undone.`)) return;
+
+  data.decks[currentDeck].stats = { completions: 0, cards: {}, completionTimes: [] };
+  save();
+  renderAnalysisSection();
 }
 
 // Rebuilds the Analysis menu section from the current deck's stats. Called
@@ -2125,8 +2163,9 @@ function renderAnalysisSection() {
 
   if (stats.completionTimes.length > 0) {
     const last = stats.completionTimes[stats.completionTimes.length - 1];
+    const best = Math.min(...stats.completionTimes);
     const avg = stats.completionTimes.reduce((a, b) => a + b, 0) / stats.completionTimes.length;
-    html += `<p style="margin:4px 0;">Last time: <strong>${formatDuration(last)}</strong> · Avg: <strong>${formatDuration(avg)}</strong></p>`;
+    html += `<p style="margin:4px 0;">Last time: <strong>${formatDuration(last)}</strong> · Best: <strong>${formatDuration(best)}</strong> · Avg: <strong>${formatDuration(avg)}</strong></p>`;
   }
 
   html += '<h4>Per-Card Stats</h4>';
@@ -3552,8 +3591,9 @@ function restoreCardDisplay() {
 
   if (sessionIndex >= sessionQueue.length) {
     // Resuming into a pass that had already been fully completed (repeat
-    // queue cleared) when it was last saved.
-    cardEl.innerHTML = '<strong>Deck Complete!</strong><br><br>';
+    // queue cleared) when it was last saved. Doesn't re-record a
+    // completion — just re-displays the same summary shown at the time.
+    cardEl.innerHTML = '<div><strong>Deck Complete!</strong></div>' + formatDeckStatsSummary(currentDeck);
     showBtn.innerText = "Restart Deck";
     showBtn.onclick = restartDeck;
     showBtn.style.display = "block";
@@ -3752,7 +3792,7 @@ function showAnswer() {
 // grade() (normal/graded study) and advanceCard() (Show Q&A Together mode).
 function showDeckComplete() {
   recordDeckCompletion(currentDeck);
-  cardEl.innerHTML = '<strong>Deck Complete!</strong><br><br>' + formatDeckStatsSummary(currentDeck);
+  cardEl.innerHTML = '<div><strong>Deck Complete!</strong></div>' + formatDeckStatsSummary(currentDeck);
   renderAnalysisSection();
   updateTimerDisplay();
 

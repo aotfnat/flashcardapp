@@ -1,11 +1,11 @@
 //service-worker.js Flashcard app
-//Version 1.18
+//Version 1.19
 //SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     new deck study analysis (stats tracking, time-to-completion timer,
-//     Analysis menu section) and the Add Deck active-deck fix get picked
-//     up by clients on their next "Check for Update" or fresh install.
+//     Deck Complete stats-summary layout fix, Best time, and the new
+//     Reset Stats button in the Analysis section get picked up by clients
+//     on their next "Check for Update" or fresh install.
 
-const CACHE = "study-cards-v1.18";
+const CACHE = "study-cards-v1.19";
 
 const CORE_ASSETS = [
   "./",
