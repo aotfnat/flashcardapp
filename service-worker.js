@@ -1,11 +1,12 @@
 //service-worker.js Flashcard app
-//Version 1.19
-//SOC: Bumped CACHE version only (no logic changes here) so that index.html's
-//     Deck Complete stats-summary layout fix, Best time, and the new
-//     Reset Stats button in the Analysis section get picked up by clients
-//     on their next "Check for Update" or fresh install.
+//Version 1.20
+//SOC: Bumped CACHE version only (no logic changes here) so that
+//     index.html's Deck Complete layout fix (heading + stats summary now
+//     wrapped in one container so they stack instead of sitting
+//     side-by-side inside #card's flex row) gets picked up by clients on
+//     their next "Check for Update" or fresh install.
 
-const CACHE = "study-cards-v1.19";
+const CACHE = "study-cards-v1.20";
 
 const CORE_ASSETS = [
   "./",

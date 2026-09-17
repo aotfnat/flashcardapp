@@ -1,5 +1,16 @@
 <!-- index.html Flashcard app-->
-<!-- Version 1.19, SOC: Deck analysis polish.
+<!-- Version 1.20, SOC: Deck Complete layout bugfix.
+     The "Deck Complete!" heading and the stats summary block were being
+     set as two sibling top-level elements inside #card — but #card itself
+     is display:flex (row, by default), so those two children were laid
+     out side-by-side instead of stacked, even though the summary's own
+     box looked fine in isolation. Both showDeckComplete() and
+     restoreCardDisplay()'s resume-into-complete branch now wrap the
+     heading + summary in a single outer <div>, so #card's flex layout
+     only ever sees one child and the heading/summary stack vertically via
+     normal block flow inside it, as intended.
+     ----------------------------------------------------------------
+     Version 1.19, SOC: Deck analysis polish.
      (1) Deck Complete's stats summary now renders as its own block below
      the heading (a bordered block with margin-top, in its own <div>
      rather than sharing a line via <br><br>) instead of appearing to sit
@@ -1519,7 +1530,7 @@ let lastDragOverEl = null;
 
 // Single source of truth for the version shown in the menu. Keep this in
 // step with the CACHE name in service-worker.js when releasing an update.
-const APP_VERSION = "1.19";
+const APP_VERSION = "1.20";
 let reloadingForUpdate = false; // guards against reloading more than once
 
 // Cache frequently-used DOM lookups once instead of re-querying on every call.
@@ -3593,7 +3604,7 @@ function restoreCardDisplay() {
     // Resuming into a pass that had already been fully completed (repeat
     // queue cleared) when it was last saved. Doesn't re-record a
     // completion — just re-displays the same summary shown at the time.
-    cardEl.innerHTML = '<div><strong>Deck Complete!</strong></div>' + formatDeckStatsSummary(currentDeck);
+    cardEl.innerHTML = '<div><div><strong>Deck Complete!</strong></div>' + formatDeckStatsSummary(currentDeck) + '</div>';
     showBtn.innerText = "Restart Deck";
     showBtn.onclick = restartDeck;
     showBtn.style.display = "block";
@@ -3792,7 +3803,7 @@ function showAnswer() {
 // grade() (normal/graded study) and advanceCard() (Show Q&A Together mode).
 function showDeckComplete() {
   recordDeckCompletion(currentDeck);
-  cardEl.innerHTML = '<div><strong>Deck Complete!</strong></div>' + formatDeckStatsSummary(currentDeck);
+  cardEl.innerHTML = '<div><div><strong>Deck Complete!</strong></div>' + formatDeckStatsSummary(currentDeck) + '</div>';
   renderAnalysisSection();
   updateTimerDisplay();
 
