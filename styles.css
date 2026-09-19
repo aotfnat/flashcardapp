@@ -1,0 +1,2178 @@
+/* ── styles.css ── iPhone-optimised PWA ──────────────────────────── */
+/* Version 11.2; SOC: Added .restart-set-btn (orange variant of the
+   edit-current-ex-btn, used by the new "Restart This Set" button) and
+   .review-fields (editable weight/reps/watts/time inputs shown by the
+   Back-button review screen). */
+
+/* ── Reset & base ──────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+    background-color: #f0f0f5;
+    /* fill entire screen including notch areas */
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;   /* dynamic viewport height — handles iOS safari toolbar */
+    overflow: hidden;
+}
+
+/* ── Scrollable content area ────────────────────────────────────── */
+.content-area {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+.content-area::-webkit-scrollbar { display: none; }
+
+
+/* ── Tab content panels ─────────────────────────────────────────── */
+.tab-content {
+    display: none;
+    padding: 16px;
+}
+.tab-content.active { display: block; }
+
+.tab-content h2 {
+    margin: -16px -16px 16px;
+    font-size: 22px;
+    font-weight: 700;
+    color: #1c1c1e;
+    /* Persistent header — stays pinned to the top of the scrolling
+       content area while the rest of the tab scrolls underneath it.
+       Negative margins cancel out .tab-content's own padding so the
+       header sits flush with the scroll container's edges, then we
+       re-apply matching padding below so it looks unchanged. */
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #f0f0f5;
+    padding: 16px 16px 12px;
+}
+
+/* ── Plan tab — weekly grid ─────────────────────────────────────── */
+#weekly-plan {
+    display: grid;
+    /* Always a single column, regardless of orientation or viewport width —
+       auto-fit previously packed 2-3 narrower columns on wide/zoomed-out
+       screens; workout cards should instead span the full width and stack. */
+    grid-template-columns: 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.day {
+    background: #fff;
+    padding: 12px;
+    border: 1px solid #d1d1d6;
+    border-radius: 12px;
+}
+.day h3 {
+    margin: 0 0 8px;
+    font-size: 16px;
+    color: #1c1c1e;
+}
+
+.exercise {
+    margin: 10px 0;
+    font-size: 14px;
+    color: #3a3a3c;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.exercise input[type="text"] {
+    flex: 1 1 100%;
+    font-size: 14px;
+    padding: 6px 8px;
+    border: 1px solid #d1d1d6;
+    border-radius: 8px;
+}
+.exercise input[type="number"] {
+    width: 60px;
+    font-size: 14px;
+    padding: 6px 8px;
+    border: 1px solid #d1d1d6;
+    border-radius: 8px;
+    text-align: center;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────── */
+button {
+    padding: 10px 18px;
+    background-color: #007aff;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    margin: 4px;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;  /* suppresses double-tap zoom on all buttons */
+    transition: opacity 0.15s;
+}
+button:active  { opacity: 0.7; }
+button:disabled {
+    background-color: #aeaeb2;
+    cursor: default;
+}
+
+/* ── ═══════════════════════════════════════════════════════════════
+   WORKOUT HUD  — elapsed (left) | rest timer (right)
+   Always visible at the top of the workout tab, readable from feet away
+   ═══════════════════════════════════════════════════════════════ */
+#workout-hud {
+    display: flex;
+    justify-content: space-between;
+    align-items: stretch;
+    background: #1c1c1e;
+    border-radius: 16px;
+    margin-bottom: 16px;
+    overflow: hidden;
+    /* stick just below the app header while scrolling */
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.hud-cell {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 14px 18px;
+}
+
+/* Right cell: elapsed on left edge, rest on right edge */
+.hud-cell.hud-right {
+    align-items: flex-end;
+    border-left: 1px solid #3a3a3c;
+}
+
+.hud-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: #8e8e93;
+    margin-bottom: 4px;
+}
+
+/* HUD numbers — portrait default: compact but clear */
+.hud-time {
+    font-size: 38px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    letter-spacing: -1.5px;
+    color: #fff;
+}
+
+/* Active/Rest phase colours */
+#timer.timer-active           { color: #ff9f0a; }   /* orange = working      */
+#timer.timer-rest             { color: #30d158; }   /* green  = resting      */
+#timer.timer-rest.low         { color: #ff453a; }   /* red    = almost done  */
+#timer.timer-active.paused,
+#timer.timer-rest.paused      { opacity: 0.5; }     /* dim when paused       */
+
+
+/* ── Exercise card ──────────────────────────────────────────────── */
+#exercise-list {
+    background: #fff;
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 16px;
+    border: 1px solid #d1d1d6;
+}
+#exercise-list h3 {
+    margin: 0 0 8px;
+    font-size: 20px;
+    font-weight: 700;
+    color: #1c1c1e;
+}
+#exercise-list p {
+    margin: 0 0 14px;
+    font-size: 17px;
+    color: #3a3a3c;
+}
+#exercise-list label {
+    font-size: 15px;
+    color: #3a3a3c;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+#exercise-list input[type="number"] {
+    font-size: 18px;
+    padding: 8px 12px;
+    border: 1px solid #d1d1d6;
+    border-radius: 10px;
+    width: 90px;
+    text-align: center;
+}
+/* Goal text — bold */
+.goal-text {
+    font-weight: 700;
+    font-size: 18px;
+    color: #1c1c1e;
+    margin: 0 0 6px;
+}
+
+/* Body weight force contribution line */
+.bw-force-text {
+    font-size: 14px;
+    color: #636366;
+    margin: 0 0 14px;
+}
+
+/* Set navigation button row */
+.set-btn-row {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+    margin-top: 4px;
+}
+
+/* Back / cancel button — 25% width */
+.back-set-btn {
+    flex: 0 0 auto;
+    width: 25%;
+    padding: 14px 0;
+    font-size: 22px;
+    font-weight: 700;
+    background: #3a3a3c;
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    margin: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    text-align: center;
+}
+.back-set-btn:active { opacity: 0.6; }
+
+/* Next Set button — 75% width */
+.next-set-btn,
+.set-btn-row .complete-btn {
+    flex: 1;
+    padding: 14px;
+    font-size: 17px;
+    font-weight: 700;
+    background: #007aff;
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    margin: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.next-set-btn:active { opacity: 0.7; }
+
+/* ── Complete workout button ────────────────────────────────────── */
+.complete-btn {
+    width: 100%;
+    padding: 16px;
+    font-size: 17px;
+    font-weight: 700;
+    background: #30d158;
+    border-radius: 14px;
+    margin: 0 0 12px;
+}
+
+/* ── Progress tab ───────────────────────────────────────────────── */
+#progress-log > div {
+    background: #fff;
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 12px;
+    border: 1px solid #d1d1d6;
+}
+#progress-log h4 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #1c1c1e;
+}
+#progress-log p {
+    margin: 4px 0;
+    font-size: 14px;
+    color: #636366;
+}
+.prog-work-summary {
+    font-size: 13px;
+    color: #1c1c1e !important;
+    margin: 0 0 6px !important;
+    background: #f2f2f7;
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+
+/* ── Two-chart progress layout ──────────────────────────────────── */
+#progress-charts-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.prog-chart-block {
+    background: #fff;
+    border: 1px solid #d1d1d6;
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.prog-chart-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px 8px;
+    background: #f2f2f7;
+    border-bottom: 1px solid #e5e5ea;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.prog-chart-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #1c1c1e;
+    flex: 1;
+    min-width: 0;
+}
+
+.prog-select {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 10px;
+    border: 1px solid #d1d1d6;
+    border-radius: 8px;
+    background: #fff;
+    color: #007aff;
+    max-width: 180px;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23007aff' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 26px;
+}
+.prog-select:focus { outline: none; border-color: #007aff; }
+
+.prog-chart-wrap {
+    padding: 10px 10px 14px;
+    position: relative;
+}
+
+/* ── Settings tab ──────────────────────────────────────────────── */
+.settings-form {
+    background: #fff;
+    border: 1px solid #d1d1d6;
+    border-radius: 14px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.settings-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #3a3a3c;
+}
+
+/* Row that holds the number input + inline unit badge */
+.settings-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.settings-input-row input {
+    flex: 1;
+}
+
+/* Small coloured badge showing the current unit (lb / kg / in / cm) */
+.settings-unit-label {
+    font-size: 13px;
+    font-weight: 700;
+    color: #fff;
+    background: #636366;
+    border-radius: 6px;
+    padding: 4px 8px;
+    min-width: 32px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.settings-form input,
+.settings-form select {
+    width: 100%;
+    padding: 12px;
+    font-size: 16px;
+    border: 1px solid #d1d1d6;
+    border-radius: 10px;
+    background: #fff;
+    color: #1c1c1e;
+}
+
+.settings-form button {
+    margin-top: 8px;
+    background: #30d158;
+}
+
+/* Explanatory hint text under settings fields */
+.settings-hint {
+    font-size: 13px;
+    color: #8e8e93;
+    line-height: 1.5;
+    margin: 0;
+}
+
+/* ── Hamburger menu button (inside HUD label row) ──────────────── */
+#menu-btn {
+    background: none;
+    border: none;
+    color: #8e8e93;
+    font-size: 20px;
+    padding: 0;
+    margin: 0 6px 0 0;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    vertical-align: middle;
+}
+#menu-btn:active { opacity: 0.5; }
+
+.hud-label {
+    display: flex;
+    align-items: center;
+}
+
+/* ── Slide-up navigation drawer ─────────────────────────────────── */
+#menu-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 200;
+}
+#menu-overlay.open { display: block; }
+
+#menu-drawer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #1c1c1e;
+    border-radius: 20px 20px 0 0;
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom));
+    z-index: 201;
+    transform: translateY(100%);
+    transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+    pointer-events: none;
+}
+#menu-drawer.open { transform: translateY(0); pointer-events: auto; }
+
+#menu-drawer-handle {
+    width: 36px;
+    height: 4px;
+    background: #3a3a3c;
+    border-radius: 2px;
+    margin: 0 auto 16px;
+}
+
+.menu-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 16px 18px;
+    margin: 0 0 8px;
+    background: #2c2c2e;
+    color: #fff;
+    font-size: 17px;
+    font-weight: 500;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.15s;
+    text-align: left;
+    letter-spacing: 0.1px;
+}
+.menu-item.active {
+    background: #30d158;
+    color: #fff;
+    font-weight: 700;
+}
+.menu-item:active { opacity: 0.7; }
+
+
+/* ── Plan tab — program header (multiple workout programs) ─────── */
+.plan-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #f0f0f5;
+    margin: -16px -16px 16px;
+    padding: 16px 16px 12px;
+}
+.plan-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.plan-header-title {
+    display: flex;
+    align-items: center;
+    font-size: 22px;
+    font-weight: 700;
+    color: #1c1c1e;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.plan-program-controls {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-end;
+}
+.plan-program-select {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.plan-program-controls .icon-btn {
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+/* ── Plan tab — workout cards ───────────────────────────────────── */
+.plan-empty {
+    color: #636366;
+    font-size: 15px;
+    text-align: center;
+    padding: 24px 0;
+}
+
+.workout-card {
+    background: #fff;
+    border: 1px solid #d1d1d6;
+    border-radius: 14px;
+    margin-bottom: 14px;
+    padding: 14px;
+    cursor: default;
+    transition: box-shadow 0.15s, opacity 0.15s;
+}
+.workout-card.next-workout {
+    border-color: #30d158;
+    box-shadow: 0 0 0 2px rgba(48,209,88,0.25);
+}
+.workout-card.dragging  { opacity: 0.4; }
+.workout-card.drag-over { box-shadow: 0 0 0 3px #30d158; }
+
+.workout-card-header {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 10px;
+    flex-wrap: nowrap;    /* keep everything on one line */
+    overflow: hidden;
+}
+
+.drag-handle {
+    font-size: 18px;
+    color: #aeaeb2;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    padding: 2px 4px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.drag-handle:active { cursor: grabbing; }
+
+.workout-seq {
+    font-size: 11px;
+    font-weight: 700;
+    color: #8e8e93;
+    min-width: 18px;
+    flex-shrink: 0;
+}
+
+.workout-name-input {
+    flex: 1 1 0;
+    min-width: 0;         /* allow shrinking below content width */
+    font-size: 15px;
+    font-weight: 600;
+    color: #1c1c1e;
+    border: none;
+    border-bottom: 1px solid #d1d1d6;
+    background: transparent;
+    padding: 4px 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.workout-name-input:focus { outline: none; border-bottom-color: #007aff; }
+
+.next-badge {
+    font-size: 11px;
+    font-weight: 700;
+    color: #30d158;
+    background: rgba(48,209,88,0.12);
+    border-radius: 6px;
+    padding: 2px 7px;
+    white-space: nowrap;
+}
+
+.icon-btn {
+    background: none;
+    border: none;
+    font-size: 14px;
+    padding: 4px 5px;
+    border-radius: 8px;
+    margin: 0;
+    cursor: pointer;
+    color: #636366;
+    flex-shrink: 0;
+}
+.icon-btn.danger { color: #ff453a; }
+.icon-btn:active { opacity: 0.5; }
+
+.exercise-list { margin-bottom: 8px; }
+
+.card-actions button {
+    font-size: 14px;
+    padding: 8px 14px;
+    background: #f2f2f7;
+    color: #007aff;
+    border-radius: 10px;
+    margin: 0;
+}
+.card-actions button:hover { background: #e5e5ea; }
+
+
+/* Start Workout button — prominent, full-width, disappears on tap */
+.start-workout-btn {
+    display: block;
+    width: 100%;
+    padding: 18px;
+    margin: 0 0 16px;
+    background: #30d158;
+    color: #fff;
+    font-size: 20px;
+    font-weight: 700;
+    border: none;
+    border-radius: 14px;
+    cursor: pointer;
+    letter-spacing: 0.2px;
+    -webkit-tap-highlight-color: transparent;
+    transition: opacity 0.15s;
+}
+.start-workout-btn:active { opacity: 0.7; }
+
+.workout-complete {
+    font-size: 20px;
+    font-weight: 700;
+    text-align: center;
+    color: #30d158;
+    padding: 20px 0;
+}
+
+
+
+/* ── Timer Start / Stop / Reset buttons ────────────────────────── */
+.timer-btn-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+.timer-btn-row button {
+    flex: 1;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 12px 8px;
+    margin: 0;
+    border-radius: 12px;
+}
+#timer-start { background: #ff9f0a; }   /* orange — Active */
+#timer-stop  { background: #ff453a; }   /* red    — Stop   */
+#timer-reset { background: #636366; }   /* grey   — Reset  */
+
+/* ── HUD right cell tap hint ────────────────────────────────────── */
+.hud-cell.hud-right:active { opacity: 0.7; }
+
+/* ── Plan tab — next/set-next badge buttons ─────────────────────── */
+.next-badge-btn {
+    font-size: 11px;
+    font-weight: 700;
+    color: #30d158;
+    background: rgba(48,209,88,0.12);
+    border: none;
+    border-radius: 6px;
+    padding: 3px 7px;
+    margin: 0;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+.next-badge-btn:active { opacity: 0.6; }
+
+.set-next-btn {
+    font-size: 11px;
+    font-weight: 600;
+    color: #8e8e93;
+    background: #f2f2f7;
+    border: none;
+    border-radius: 6px;
+    padding: 3px 7px;
+    margin: 0;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+.set-next-btn:active { opacity: 0.6; }
+
+/* ── Timer settings side drawer (slides in from right) ──────────── */
+#timer-settings-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 300;
+}
+#timer-settings-overlay.open { display: block; }
+
+#timer-settings-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(300px, 85vw);
+    background: #1c1c1e;
+    padding: 24px 20px calc(24px + env(safe-area-inset-bottom));
+    padding-top: calc(24px + env(safe-area-inset-top));
+    z-index: 301;
+    transform: translateX(100%);
+    transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    pointer-events: none;
+}
+#timer-settings-drawer.open { transform: translateX(0); pointer-events: auto; }
+
+.ts-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.ts-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: #fff;
+}
+.ts-close {
+    background: #2c2c2e;
+    color: #8e8e93;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    padding: 6px 12px;
+    margin: 0;
+    cursor: pointer;
+}
+.ts-close:active { opacity: 0.6; }
+
+.ts-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.ts-label {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+}
+.timer-label-active { color: #ff9f0a; }
+.timer-label-rest   { color: #30d158; }
+
+.ts-stepper {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.ts-step-btn {
+    width: 44px;
+    height: 44px;
+    background: #2c2c2e;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 22px;
+    font-weight: 300;
+    line-height: 1;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+    flex-shrink: 0;
+}
+.ts-step-btn:active { opacity: 0.6; }
+
+.ts-val {
+    font-size: 36px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    color: #fff;
+    min-width: 56px;
+    text-align: center;
+    line-height: 1;
+}
+.ts-unit {
+    font-size: 14px;
+    color: #8e8e93;
+    font-weight: 500;
+}
+
+
+/* ── Timer order toggle button ──────────────────────────────────── */
+.ts-order-toggle {
+    width: 100%;
+    padding: 14px 16px;
+    border: none;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 700;
+    margin: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    text-align: center;
+    transition: background 0.2s;
+}
+.ts-order-toggle.order-active-first {
+    background: linear-gradient(90deg, #ff9f0a 60%, #30d158 100%);
+    color: #fff;
+}
+.ts-order-toggle.order-rest-first {
+    background: linear-gradient(90deg, #30d158 60%, #ff9f0a 100%);
+    color: #fff;
+}
+/* Fallback before JS runs */
+.ts-order-toggle:not(.order-active-first):not(.order-rest-first) {
+    background: #2c2c2e;
+    color: #fff;
+}
+.ts-order-toggle:active { opacity: 0.7; }
+.sound-on  { background: #30d158; color: #fff; }
+.sound-off { background: #2c2c2e; color: #8e8e93; }
+
+.ts-hint {
+    font-size: 13px;
+    color: #636366;
+    line-height: 1.5;
+    margin: 0;
+}
+
+
+/* ── Plan tab — backup / restore buttons ───────────────────────── */
+.backup-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+.backup-btn {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 12px 10px;
+    border-radius: 12px;
+    margin: 0;
+}
+.export-btn { background: #5e5ce6; }   /* indigo — export */
+.import-btn { background: #ff9f0a; }   /* orange — import */
+.export-btn:active,
+.import-btn:active { opacity: 0.7; }
+
+
+/* Hide floating button on workout tab — HUD has its own ☰ */
+#workout-section.active ~ * #floating-menu-btn,
+body:has(#workout-section.active) #floating-menu-btn {
+    display: none;
+}
+
+
+
+
+
+/* ── Swipe-to-delete ─────────────────────────────────────────────── */
+.swipe-wrapper {
+    position: relative;
+    overflow: hidden;
+    border-radius: 14px;
+    margin-bottom: 14px;
+    /* isolate so the card's box-shadow (next-workout / drag-over) never
+       paints outside this wrapper's clip region */
+    isolation: isolate;
+}
+.swipe-delete-btn {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 100px;
+    background: #ff453a;
+    color: #fff;
+    border: none;
+    font-size: 14px;
+    font-weight: 700;
+    border-radius: 0 14px 14px 0;
+    cursor: pointer;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 0;
+    /* Sit fully off-canvas at rest instead of merely "behind" the card —
+       avoids any 1px seam where the card's own border meets the red button
+       at the rounded corners. */
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+}
+/* Revealed once the card has been swiped open (JS toggles this on the wrapper) */
+.swipe-wrapper.swipe-revealed .swipe-delete-btn {
+    transform: translateX(0);
+}
+.swipe-delete-btn:active { opacity: 0.8; }
+
+/* While a card is being reordered (HTML5 drag or touch-drag), the card's
+   opacity drops so the drop target is visible underneath — but that also
+   reveals the red delete button sitting in the same wrapper. Hide it
+   outright for the duration of the drag. JS toggles .drag-in-progress on
+   the wrapper directly (primary mechanism); the :has() rule is a
+   same-effect fallback for browsers where the JS toggle is somehow missed. */
+.swipe-wrapper.drag-in-progress .swipe-delete-btn,
+.swipe-wrapper:has(.workout-card.dragging) .swipe-delete-btn {
+    visibility: hidden;
+}
+
+.workout-card {
+    position: relative;
+    z-index: 1;
+    margin-bottom: 0;  /* wrapper handles margin */
+    border-radius: 14px;
+    will-change: transform;
+}
+
+/* ── Disabled set / complete buttons ─────────────────────────────── */
+.next-set-btn:disabled,
+.complete-btn:disabled {
+    background: #aeaeb2;
+    cursor: default;
+    opacity: 0.6;
+}
+
+/* ── Monthly calendar ────────────────────────────────────────────── */
+.cal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+.cal-month-label {
+    font-size: 17px;
+    font-weight: 700;
+    color: #1c1c1e;
+}
+.cal-nav {
+    background: #f2f2f7;
+    color: #1c1c1e;
+    border: none;
+    border-radius: 8px;
+    font-size: 20px;
+    font-weight: 400;
+    padding: 4px 14px;
+    margin: 0;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+.cal-nav:active { opacity: 0.6; }
+
+.cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+}
+.cal-dow {
+    text-align: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: #8e8e93;
+    padding-bottom: 4px;
+}
+.cal-day {
+    position: relative;
+    aspect-ratio: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 500;
+    color: #1c1c1e;
+    border-radius: 8px;
+    background: #f9f9fb;
+}
+.cal-empty { background: transparent; }
+.cal-today {
+    background: #007aff;
+    color: #fff;
+    font-weight: 700;
+}
+.cal-worked {
+    background: rgba(48,209,88,0.18);
+    color: #1c1c1e;
+}
+.cal-today.cal-worked {
+    background: #007aff;  /* today takes priority */
+}
+.cal-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #30d158;
+    position: absolute;
+    bottom: 3px;
+}
+.cal-today .cal-dot { background: #fff; }
+
+/* ── Section heading menu button ────────────────────────────────── */
+.section-menu-btn {
+    background: none;
+    border: none;
+    color: #636366;
+    font-size: 20px;
+    padding: 0 6px 0 0;
+    margin: 0;
+    cursor: pointer;
+    vertical-align: middle;
+    line-height: 1;
+    -webkit-tap-highlight-color: transparent;
+}
+.section-menu-btn:active { opacity: 0.5; }
+
+
+
+/* ── Collapsible workout card ────────────────────────────────────── */
+.workout-card-header {
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.collapse-chevron {
+    font-size: 10px;
+    color: #aeaeb2;
+    flex-shrink: 0;
+    padding-left: 2px;
+}
+.card-body {
+    margin-top: 8px;
+}
+
+/* ── Previous accomplishment block ──────────────────────────────── */
+.prev-accomplishment {
+    margin-top: 10px;
+    background: #f2f2f7;
+    border-radius: 10px;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.prev-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #8e8e93;
+}
+.prev-stats {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1c1c1e;
+}
+.prev-none {
+    color: #aeaeb2;
+    font-size: 13px;
+    font-style: italic;
+}
+
+/* ── App update button (Calendar tab) ──────────────────────────── */
+.update-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+}
+.update-btn {
+    background: #5e5ce6;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 12px 18px;
+    border-radius: 12px;
+    border: none;
+    cursor: pointer;
+    margin: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+.update-btn:active { opacity: 0.7; }
+.update-status {
+    font-size: 13px;
+    font-weight: 500;
+    color: #30d158;
+}
+
+.app-version-label {
+    font-size: 12px;
+    color: #aeaeb2;
+    margin: 4px 0 0;
+}
+
+
+/* ── Exercise entry modal ───────────────────────────────────────── */
+#ex-modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 400;
+}
+#ex-modal-overlay.open { display: block; }
+
+#ex-modal {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%) scale(0.92);
+    width: min(360px, 92vw);
+    max-width: 92vw;
+    box-sizing: border-box;
+    overflow-x: hidden;
+    background: #1c1c1e;
+    border-radius: 20px;
+    padding: 24px 20px 16px;
+    z-index: 401;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+#ex-modal.open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+.ex-modal-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    text-align: center;
+}
+
+/* 2-column grid for unit buttons, 3-column for preset numbers */
+.ex-btn-grid {
+    display: grid;
+    gap: 10px;
+}
+.ex-btn-grid-2 { grid-template-columns: 1fr 1fr; }
+.ex-btn-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+
+.ex-choice-btn {
+    background: #2c2c2e;
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    font-size: 17px;
+    font-weight: 600;
+    padding: 16px 8px;
+    margin: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.12s;
+    text-align: center;
+}
+.ex-choice-btn:active { background: #3a3a3c; }
+.ex-manual-btn {
+    background: #3a3a3c;
+    color: #8e8e93;
+    font-size: 15px;
+}
+
+/* Manual entry row */
+#ex-manual-target-row,
+#ex-manual-sets-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.ex-text-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: #2c2c2e;
+    color: #fff;
+    border: 1px solid #3a3a3c;
+    border-radius: 12px;
+    font-size: 17px;
+    padding: 14px 16px;
+}
+.ex-text-input:focus {
+    outline: none;
+    border-color: #30d158;
+}
+
+.ex-num-input {
+    flex: 0 1 110px;
+    min-width: 0;
+    background: #2c2c2e;
+    color: #fff;
+    border: 1px solid #3a3a3c;
+    border-radius: 12px;
+    font-size: 20px;
+    font-weight: 700;
+    padding: 12px 10px;
+    text-align: center;
+}
+.ex-num-input:focus {
+    outline: none;
+    border-color: #30d158;
+}
+
+.ex-modal-footer {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.ex-modal-cancel {
+    background: #3a3a3c;
+    color: #8e8e93;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 10px 18px;
+    margin: 0;
+    cursor: pointer;
+}
+.ex-modal-next {
+    background: #30d158;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 10px 18px;
+    margin: 0;
+    cursor: pointer;
+}
+.ex-modal-cancel:active,
+.ex-modal-next:active { opacity: 0.7; }
+
+/* Landscape: shrink modal so it fits without scrolling */
+@media (orientation: landscape) and (max-height: 500px) {
+    #ex-modal {
+        padding: 14px 16px 10px;
+        gap: 10px;
+        max-height: 90dvh;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+    .ex-choice-btn { padding: 11px 6px; font-size: 15px; }
+    .ex-modal-title { font-size: 15px; }
+}
+
+/* ── ═══════════════════════════════════════════════════════════════
+   LANDSCAPE — iPhone rotated
+   Shrink HUD numbers slightly so both clocks still fit side-by-side;
+   reduce header and tab bar to reclaim vertical space.
+   ═══════════════════════════════════════════════════════════════ */
+@media (orientation: landscape) and (max-height: 500px) {
+
+    .content-area {
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    }
+
+    /* HUD numbers: large in landscape since there's horizontal room */
+    .hud-time { font-size: 52px; letter-spacing: -2px; }
+    .hud-cell { padding: 10px 16px; }
+    .hud-label { font-size: 10px; }
+
+    /* Stack controls in two columns to save vertical space */
+    #workout-section .control-row { margin-bottom: 8px; }
+    .timer-btn-row { margin-bottom: 10px; }
+    .timer-btn-row button { padding: 10px 8px; font-size: 14px; }
+
+    .tab-content { padding: 10px 14px; }
+    .tab-content h2 { margin: -10px -14px 12px; padding: 10px 14px 8px; }
+
+    /* Drawer: cap height and scroll so all items are reachable in landscape */
+    #menu-drawer {
+        max-height: 80dvh;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .menu-item {
+        padding: 11px 16px;
+        margin-bottom: 6px;
+        font-size: 15px;
+    }
+    #menu-drawer-handle { margin-bottom: 10px; }
+
+}
+
+/* ── Phase 2: Plan tab — phase sections ─────────────────────────── */
+.phase-section {
+    margin-bottom: 14px;
+    border: 1px solid #e5e5ea;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.phase-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #f2f2f7;
+    border-bottom: 1px solid #e5e5ea;
+}
+
+.phase-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #636366;
+}
+
+.phase-add-btn {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 5px 11px;
+    margin: 0;
+    background: #007aff;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.phase-add-btn:active { opacity: 0.7; }
+
+.phase-ex-list {
+    padding: 8px 10px;
+}
+
+.phase-empty {
+    font-size: 13px;
+    color: #aeaeb2;
+    font-style: italic;
+    text-align: center;
+    padding: 6px 0;
+    margin: 0;
+}
+
+/* ── Phase 2: Plan tab — compact exercise row ───────────────────── */
+.plan-ex-row {
+    background: #fff;
+    border: 1px solid #e5e5ea;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    transition: box-shadow 0.15s, opacity 0.15s;
+}
+.plan-ex-row:last-child { margin-bottom: 0; }
+
+/* Exercise reorder drag states */
+.plan-ex-row.ex-dragging  { opacity: 0.4; }
+.plan-ex-row.ex-drag-over { box-shadow: 0 0 0 2px #007aff; }
+
+.ex-drag-handle {
+    font-size: 16px;
+    color: #aeaeb2;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    padding: 2px 4px 2px 0;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.ex-drag-handle:active { cursor: grabbing; }
+
+.plan-ex-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+.plan-ex-name {
+    flex: 1;
+    font-size: 15px;
+    font-weight: 600;
+    color: #1c1c1e;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.plan-ex-edit-btn {
+    color: #007aff;
+    font-size: 14px;
+}
+
+.plan-ex-detail {
+    font-size: 13px;
+    color: #3a3a3c;
+    margin-bottom: 2px;
+}
+
+.plan-ex-rest {
+    font-size: 12px;
+    color: #8e8e93;
+}
+
+/* ── Phase 2: Exercise type tags ────────────────────────────────── */
+.ex-tag {
+    font-size: 10px;
+    font-weight: 800;
+    border-radius: 5px;
+    padding: 2px 5px;
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+}
+.ex-tag-iso {
+    background: rgba(90,200,250,0.18);
+    color: #0a84ff;
+}
+.ex-tag-ton {
+    background: rgba(52,199,89,0.18);
+    color: #30d158;
+}
+.ex-tag-bi {
+    background: rgba(142,142,147,0.16);
+    color: #636366;
+}
+.ex-tag-uni {
+    background: rgba(255,159,10,0.18);
+    color: #ff9f0a;
+}
+.ex-tag-cardio {
+    background: rgba(10,132,255,0.18);
+    color: #0a84ff;
+}
+
+/* ── Phase 2: Exercise form modal ───────────────────────────────── */
+/* The modal itself is already styled; this handles the form internals */
+
+.ex-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    max-height: 60dvh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 2px; /* scrollbar gap */
+}
+
+.ex-form-section {
+    padding: 12px 0;
+    border-bottom: 1px solid #2c2c2e;
+    max-width: 100%;
+}
+.ex-form-section:last-child { border-bottom: none; }
+
+.ex-form-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #8e8e93;
+    margin-bottom: 8px;
+}
+
+.ex-form-hint {
+    font-size: 11px;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    color: #636366;
+}
+
+.ex-form-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    max-width: 100%;
+}
+
+.ex-form-unit {
+    font-size: 13px;
+    color: #8e8e93;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.ex-form-select {
+    width: 100%;
+    padding: 11px 12px;
+    font-size: 15px;
+    border: 1px solid #3a3a3c;
+    border-radius: 10px;
+    background: #2c2c2e;
+    color: #fff;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238e8e93' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 32px;
+}
+.ex-form-select:focus { outline: none; border-color: #30d158; }
+.ex-form-select:disabled { opacity: 0.45; }
+
+/* Isotonic / isometric toggle */
+.ex-toggle-row {
+    display: flex;
+    gap: 10px;
+}
+
+.ex-toggle-opt {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: #2c2c2e;
+    border-radius: 10px;
+    padding: 11px 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.ex-toggle-opt input[type="radio"] {
+    accent-color: #30d158;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+/* Exercise-type row (3 options) — allow wrapping to two rows on narrow
+   screens so "Cardio/Watt" never gets clipped in portrait orientation. */
+.ex-toggle-row-wrap {
+    flex-wrap: wrap;
+}
+.ex-toggle-row-wrap .ex-toggle-opt {
+    flex: 1 1 30%;
+    min-width: 90px;
+}
+
+/* BW preview inline */
+.ex-bw-preview {
+    font-size: 13px;
+    font-weight: 600;
+    color: #30d158;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Library search results */
+.ex-lib-results {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 140px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+.ex-lib-result-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    background: #2c2c2e;
+    border: 1px solid #3a3a3c;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 0;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+}
+.ex-lib-result-btn:active { background: #3a3a3c; }
+
+.ex-lib-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    max-width: 100%;
+    overflow-wrap: break-word;
+}
+
+.ex-lib-meta {
+    font-size: 12px;
+    color: #8e8e93;
+    max-width: 100%;
+    overflow-wrap: break-word;
+}
+
+/* ── Phase 2: Workout tab — phase badge ─────────────────────────── */
+.workout-phase-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #636366;
+    background: #f2f2f7;
+    border-radius: 6px;
+    padding: 3px 8px;
+    margin-bottom: 8px;
+}
+
+/* Landscape: make exercise form modal scrollable without clipping */
+@media (orientation: landscape) and (max-height: 500px) {
+    .ex-form {
+        max-height: 55dvh;
+        overflow-x: hidden;
+    }
+    .ex-form-section {
+        padding: 8px 0;
+    }
+    .ex-form-row {
+        gap: 4px 6px;
+    }
+    .ex-lib-results {
+        max-height: 110px;
+    }
+}
+
+/* ── Phase 3: HUD additions ─────────────────────────────────────── */
+
+/* Phase label in HUD left cell */
+.hud-phase-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #636366;
+    min-height: 14px;
+}
+
+/* Running work total in HUD left cell */
+.hud-work-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #30d158;
+    min-height: 14px;
+}
+
+/* Portrait: clock on top, meta (phase + work) stacked below */
+.hud-elapsed-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+/* Meta block: phase label + work total, always stacked vertically inside */
+.hud-elapsed-meta {
+    display: flex;
+    flex-direction: column;
+    margin-top: 2px;
+}
+
+/* Right cell top row: pause/resume btn + phase label side by side */
+.hud-timer-top-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+/* Pause/Resume button — small, top of timer cell */
+.pause-resume-btn {
+    background: #2c2c2e;
+    border: 1px solid #3a3a3c;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 3px 9px;
+    margin: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    flex-shrink: 0;
+    line-height: 1.4;
+    touch-action: manipulation;
+}
+.pause-resume-btn:active { opacity: 0.6; }
+
+/* Skip-rest button — orange tint to signal "advance" */
+.skip-rest-btn {
+    background: rgba(255,159,10,0.18);
+    border-color: rgba(255,159,10,0.4);
+    color: #ff9f0a;
+}
+
+/* Timed-isotonic user input block */
+.timed-input-block {
+    background: #f2f2f7;
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+}
+.timed-input-label {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1c1c1e;
+    margin: 0 0 8px;
+}
+.timed-user-input {
+    font-size: 22px;
+    font-weight: 700;
+    padding: 8px 12px;
+    border: 1px solid #d1d1d6;
+    border-radius: 10px;
+    width: 110px;
+    text-align: center;
+    margin-top: 4px;
+}
+
+/* Timer low-time pulse for rest */
+@keyframes timerLowPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+#timer.timer-rest.low {
+    animation: timerLowPulse 0.8s ease-in-out infinite;
+}
+
+/* Landscape: move phase label + work total inline to the right of the elapsed clock */
+@media (orientation: landscape) and (max-height: 500px) {
+    .hud-phase-label { font-size: 10px; }
+    .hud-work-label  { font-size: 10px; }
+    .hud-timer-top-row { gap: 4px; }
+    .pause-resume-btn { font-size: 12px; padding: 2px 7px; }
+
+    /* Row: clock on left, meta block (phase + work) on right, bottom-aligned */
+    .hud-elapsed-row {
+        flex-direction: row;
+        align-items: flex-end;
+        gap: 8px;
+    }
+
+    /* Meta stacks phase + work vertically, no extra top margin needed */
+    .hud-elapsed-meta {
+        margin-top: 0;
+        margin-bottom: 2px; /* nudge up slightly off the baseline */
+    }
+}
+
+/* ── Workout card: goal + set counter on one line ───────────────── */
+.goal-set-line {
+    font-weight: 700;
+    font-size: 18px;
+    color: #1c1c1e;
+    margin: 0 0 10px;
+}
+
+.set-counter-num {
+    color: #ff453a;
+}
+
+/* Remove old split-layout rules no longer needed */
+.goal-set-line .goal-text {
+    font-weight: inherit;
+    font-size: inherit;
+    color: inherit;
+    margin: 0;
+}
+
+.set-counter {
+    display: none;
+}
+
+/* ── Workout card: BW load + added weight — single inline line ───── */
+.weight-inline {
+    font-size: 14px;
+    color: #636366;
+    margin: 0 0 14px;
+    line-height: 2;
+}
+
+.weight-inline-input {
+    font-size: 16px;
+    padding: 4px 8px;
+    border: 1px solid #d1d1d6;
+    border-radius: 8px;
+    width: 80px;
+    text-align: center;
+    vertical-align: middle;
+}
+
+/* ── Progress chart pagination arrows ────────────────────────────── */
+.prog-chart-nav-btn {
+    position: absolute;
+    bottom: 8px;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    margin: 0;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.55);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
+    -webkit-tap-highlight-color: transparent;
+}
+.prog-chart-nav-btn:active { opacity: 0.7; }
+.prog-chart-nav-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+.prog-chart-nav-left  { left: 8px; }
+.prog-chart-nav-right { right: 8px; }
+
+/* ── Exercise chart custom tooltip (clickable date) ──────────────── */
+.prog-chart-tooltip {
+    position: absolute;
+    left: 0;
+    top: 0;
+    background: #1c1c1e;
+    color: #fff;
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.1s;
+    z-index: 6;
+    max-width: 220px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+}
+.prog-tt-date {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: #0a84ff;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0 0 4px;
+    margin: 0 0 4px;
+    border-bottom: 1px solid #3a3a3c;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.prog-tt-date:active { opacity: 0.7; }
+.prog-tt-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+.prog-tt-swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+/* ── Progress log card highlight (scrolled-to from chart tap) ────── */
+@keyframes progCardHighlight {
+    0%, 100% { background: #fff; }
+    30% { background: rgba(10,132,255,0.18); }
+}
+.prog-card-highlight {
+    animation: progCardHighlight 2s ease;
+}
+
+/* ── Settings checkbox row (e.g. Show Trend Lines toggle) ────────── */
+.settings-checkbox-row {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center;
+    justify-content: space-between;
+}
+.settings-checkbox-row input[type="checkbox"] {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    accent-color: #30d158;
+}
+
+/* ── Progress log edit modal — reuses .ex-modal-title / .ex-modal-footer /
+   .ex-modal-cancel / .ex-modal-next for consistent chrome; only the
+   overlay/container/body/list styling below is new. ────────────────── */
+#log-edit-modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 400;
+}
+#log-edit-modal-overlay.open { display: block; }
+
+#log-edit-modal {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%) scale(0.92);
+    width: min(400px, 92vw);
+    max-width: 92vw;
+    box-sizing: border-box;
+    overflow-x: hidden;
+    background: #1c1c1e;
+    border-radius: 20px;
+    padding: 24px 20px 16px;
+    z-index: 401;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+#log-edit-modal.open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+.log-edit-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-height: 60dvh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 2px;
+}
+
+.log-edit-ex-block {
+    background: #2c2c2e;
+    border: 1px solid #3a3a3c;
+    border-radius: 12px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.log-edit-ex-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.log-edit-ex-name {
+    flex: 1;
+    min-width: 0;
+    background: #1c1c1e;
+    color: #fff;
+    border: 1px solid #3a3a3c;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 8px 10px;
+}
+.log-edit-ex-name:focus { outline: none; border-color: #30d158; }
+.log-edit-ex-phase { font-size: 16px; flex-shrink: 0; }
+
+.log-edit-sets-count {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.log-edit-sets-count label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #8e8e93;
+    font-weight: 600;
+}
+.log-edit-sets-count input {
+    width: 60px;
+    background: #1c1c1e;
+    color: #fff;
+    border: 1px solid #3a3a3c;
+    border-radius: 8px;
+    font-size: 14px;
+    padding: 6px 8px;
+    text-align: center;
+}
+
+.log-edit-set-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.log-edit-set-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: #1c1c1e;
+    border-radius: 8px;
+    padding: 8px;
+}
+.log-edit-set-num {
+    font-size: 12px;
+    font-weight: 700;
+    color: #8e8e93;
+    flex: 0 0 44px;
+}
+.log-edit-set-row label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 11px;
+    color: #8e8e93;
+    flex: 1 1 70px;
+    min-width: 60px;
+}
+.log-edit-set-row input {
+    background: #2c2c2e;
+    color: #fff;
+    border: 1px solid #3a3a3c;
+    border-radius: 6px;
+    font-size: 13px;
+    padding: 6px 6px;
+    text-align: center;
+}
+.log-edit-set-row input:focus { outline: none; border-color: #30d158; }
+
+/* ── Progress log card header (title + Edit button) ─────────────── */
+.prog-log-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.prog-log-header-row h4 { flex: 1; min-width: 0; }
+
+/* ── Edit-current-exercise button (Workout tab) ──────────────────── */
+.edit-current-ex-btn {
+    display: block;
+    width: 100%;
+    margin-top: 10px;
+    background: #2c2c2e;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 10px;
+    border-radius: 10px;
+    border: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.edit-current-ex-btn:active { opacity: 0.7; }
+
+/* ── Restart-this-set button (orange variant of edit-current-ex-btn) ──── */
+.restart-set-btn {
+    background: #ff9f0a;
+    color: #fff;
+    margin-bottom: 8px;
+}
+
+/* ── Review-mode editable fields (Back button) ───────────────────────── */
+.review-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: #f2f2f7;
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin: 0 0 14px;
+}
+.review-fields label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #3a3a3c;
+}
+.review-fields input[type="number"] {
+    width: 110px;
+    font-size: 16px;
+    padding: 8px 10px;
+    border: 1px solid #d1d1d6;
+    border-radius: 10px;
+    text-align: center;
+}
