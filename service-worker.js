@@ -1,56 +1,69 @@
-// service-worker.js
-// Version 11.2 — Cache bump to pick up app.js/styles.css (review-mode back
-// button, restart-set button, superset/circuit support, "last time"
-// laterality display)
+//service-worker.js Flashcard app
+//Version 1.20
+//SOC: Bumped CACHE version only (no logic changes here) so that
+//     index.html's Deck Complete layout fix (heading + stats summary now
+//     wrapped in one container so they stack instead of sitting
+//     side-by-side inside #card's flex row) gets picked up by clients on
+//     their next "Check for Update" or fresh install.
 
-const CACHE_NAME = 'fitness-app-v11.2';
+const CACHE = "study-cards-v1.20";
 
-const BASE = self.location.pathname.replace(/\/service-worker\.js$/, '');
-const urlsToCache = [
-    BASE + '/',
-    BASE + '/index.html',
-    BASE + '/styles.css',
-    BASE + '/app.js',
-    BASE + '/exercise-library.js',
-    'https://cdn.jsdelivr.net/npm/chart.js'
+const CORE_ASSETS = [
+  "./",
+  "./index.html",
+  "./manifest.json"
 ];
 
-// ── Install: cache all app files ─────────────────────────────────
-self.addEventListener('install', event => {
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then(cache => cache.addAll(urlsToCache))
-    );
-    // Don't wait for old SW to finish — take over immediately on update
-    self.skipWaiting();
+// Optional: cached individually (not via addAll) so a missing file
+// doesn't cause the entire install to fail.
+const OPTIONAL_ASSETS = [
+  "./icon-192.png",
+  "./icon-512.png"
+];
+
+// Bypasses the HTTP cache so "Check for Update" reliably fetches the latest
+// deployed files instead of whatever the browser already had cached.
+function freshRequest(url) {
+  return new Request(url, { cache: "reload" });
+}
+
+self.addEventListener("install", e => {
+  self.skipWaiting();
+  e.waitUntil(
+    caches.open(CACHE).then(cache => {
+      return cache.addAll(CORE_ASSETS.map(freshRequest)).then(() => {
+        return Promise.all(
+          OPTIONAL_ASSETS.map(asset =>
+            cache.add(freshRequest(asset)).catch(err => {
+              console.warn("Skipping optional asset (not found?):", asset, err);
+            })
+          )
+        );
+      });
+    })
+  );
 });
 
-// ── Activate: delete old caches, claim all clients ───────────────
-self.addEventListener('activate', event => {
-    event.waitUntil(
-        caches.keys().then(keys =>
-            Promise.all(
-                keys
-                    .filter(key => key !== CACHE_NAME)
-                    .map(key => caches.delete(key))
-            )
-        ).then(() => self.clients.claim())
-    );
+self.addEventListener("activate", e => {
+  e.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(
+        keys.filter(key => key !== CACHE).map(key => caches.delete(key))
+      ))
+      .then(() => self.clients.claim())
+  );
 });
 
-// ── Fetch: cache-first for app files, network-first for others ───
-self.addEventListener('fetch', event => {
-    event.respondWith(
-        caches.match(event.request)
-            .then(response => response || fetch(event.request))
-    );
-});
-
-// ── Message: force update on demand from the app ─────────────────
-// When the app posts { action: 'skipWaiting' }, the new SW activates
-// immediately and the app reloads to pick up fresh files.
-self.addEventListener('message', event => {
-    if (event.data?.action === 'skipWaiting') {
-        self.skipWaiting();
-    }
+self.addEventListener("fetch", e => {
+  e.respondWith(
+    caches.match(e.request).then(res => {
+      if (res) return res;
+      return fetch(e.request).catch(() => {
+        if (e.request.mode === "navigate") {
+          return caches.match("./index.html");
+        }
+        return new Response("Offline", { status: 503, statusText: "Offline" });
+      });
+    })
+  );
 });
